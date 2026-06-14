@@ -1,0 +1,87 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:./dev.db"
+}
+
+model User {
+  id                    String            @id @default(uuid())
+  name                  String            @unique
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  memberships           GroupMembership[]
+  expensesPaid          Expense[]         @relation("PaidBy")
+  expenseSplits         ExpenseSplit[]
+  resolvedStagedExpenses StagedExpense[]
+}
+
+model Group {
+  id          String            @id @default(uuid())
+  name        String
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  memberships GroupMembership[]
+  expenses    Expense[]
+}
+
+model GroupMembership {
+  id        String    @id @default(uuid())
+  groupId   String
+  userId    String
+  joinedAt  DateTime
+  leftAt    DateTime?
+  group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Expense {
+  id           String         @id @default(uuid())
+  groupId      String
+  paidById     String
+  description  String
+  amount       Float
+  currency     String
+  exchangeRate Float          @default(1.0)
+  date         DateTime
+  splitType    String
+  isSettlement Boolean        @default(false)
+  notes        String?
+  group        Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  paidBy       User           @relation("PaidBy", fields: [paidById], references: [id], onDelete: Cascade)
+  splits       ExpenseSplit[]
+}
+
+model ExpenseSplit {
+  id          String  @id @default(uuid())
+  expenseId   String
+  userId      String
+  owedAmount  Float
+  expense     Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model ImportSession {
+  id             String          @id @default(uuid())
+  importedAt     DateTime        @default(now())
+  status         String
+  stagedExpenses StagedExpense[]
+}
+
+model StagedExpense {
+  id                String        @id @default(uuid())
+  sessionId         String
+  rawRowNumber      Int
+  rawData           String // JSON serialized original string values from the CSV
+  detectedAnomalies String // JSON serialized array of anomaly codes/descriptions
+  status            String // "PENDING_APPROVAL", "APPROVED", "REJECTED", "RESOLVED"
+  resolvedPayerId   String?
+  resolvedAmount    Float?
+  session           ImportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  resolvedPayer     User?         @relation(fields: [resolvedPayerId], references: [id], onDelete: SetNull)
+}
