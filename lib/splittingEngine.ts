@@ -1,302 +1,316 @@
-import prisma from './db';
+// ─── Splitting Engine ─────────────────────────────────────────────────────────
+// Handles equal, unequal, percentage, and share split types.
+// Converts USD → INR at a fixed 83.0 rate.
+// Validates temporal membership boundaries when timelines are provided.
+// Returns a typed result object with success flag, errors, baseAmountINR,
+// and per-user splits (userId + userName + owedAmount in INR).
 
 export interface RawSplitInput {
-  amount: number;         // Raw transaction amount
-  currency: string;       // "INR" or "USD"
-  date: Date;             // Transaction date
-  splitType: 'equal' | 'unequal' | 'percentage' | 'share';
-  splitWith: string[];    // Array of User names to split with
-  splitDetails?: string;  // Optional raw details string from the CSV
+  amount: number;
+  currency: string;
+  date: Date;
+  splitType: string;
+  splitWith: string[]; // display names (e.g. "Aisha", "Rohan")
+  splitDetails?: string;
 }
 
-export interface SplitOutput {
+export interface SplitCalculationInput {
+  amount: number;
+  splitType: "equal" | "unequal" | "percentage" | "share";
+  splitWith: string[]; // User IDs (legacy simple API)
+  splitDetails?: string;
+}
+
+export interface SplitResult {
   userId: string;
   userName: string;
-  owedAmount: number;     // Standardized to INR (2 decimal places)
+  owedAmount: number; // Always in INR
 }
 
-export interface CalculationResult {
+export interface SplitCalculationOutput {
   success: boolean;
-  errors: string[];       // All mathematical or logic validation errors
-  splits: SplitOutput[];  // Final outputs if successful
-  baseAmountINR: number;  // Standardized transaction total in INR
+  errors: string[];
+  baseAmountINR: number;
+  splits: SplitResult[];
 }
 
-export interface UserMembershipTimeline {
-  joinedAt: Date;
-  leftAt: Date | null;
-}
+const USD_TO_INR = 83.0;
 
-/**
- * Standard USD to INR exchange rate used in the system if currency is USD.
- */
-export const DEFAULT_USD_TO_INR_RATE = 83.0;
-
-/**
- * Calculates and validates splits for an expense based on the split type, details, and active memberships.
- * 
- * @param input The raw split input details from CSV or form
- * @param userMap Map of userName (case-insensitive) to userId
- * @param membershipTimelines Optional timelines map mapping userId to their membership periods
- * @returns CalculationResult containing validation status, errors, and calculated splits in INR
- */
+// ─── Primary API ─────────────────────────────────────────────────────────────
+// Used by all API routes and test scripts.
+// userMap: { "Aisha" -> "uuid-...", ... }  (name -> id, case-sensitive keys)
+// membershipTimelines: optional, { "uuid-..." -> [{joinedAt, leftAt}] }
 export async function calculateSplits(
   input: RawSplitInput,
   userMap: Record<string, string>,
-  membershipTimelines?: Record<string, UserMembershipTimeline[]>
-): Promise<CalculationResult> {
+  membershipTimelines?: Record<string, { joinedAt: Date; leftAt: Date | null }[]>
+): Promise<SplitCalculationOutput> {
   const errors: string[] = [];
   const { amount, currency, date, splitType, splitWith, splitDetails } = input;
 
-  // 1. Validate splitWith has users
-  if (!splitWith || splitWith.length === 0) {
-    return {
-      success: false,
-      errors: ['At least one user must be specified to split the expense.'],
-      splits: [],
-      baseAmountINR: 0,
-    };
+  // ── 1. Currency conversion ────────────────────────────────────────────────
+  const rate = (currency || "INR").trim().toUpperCase() === "USD" ? USD_TO_INR : 1.0;
+  const baseAmountINR = Math.round(amount * rate * 100) / 100;
+
+  // ── 2. Resolve names → user IDs ──────────────────────────────────────────
+  // Build a case-insensitive alias map from the provided userMap
+  const nameToId: Record<string, string> = {};
+  const nameToCanonical: Record<string, string> = {};
+  for (const [name, id] of Object.entries(userMap)) {
+    nameToId[name.trim().toLowerCase()] = id;
+    nameToCanonical[name.trim().toLowerCase()] = name;
   }
 
-  // 2. Determine exchange rate and base amount in INR
-  let exchangeRate = 1.0;
-  const normCurrency = (currency || '').trim().toUpperCase();
-  if (normCurrency === 'USD') {
-    exchangeRate = DEFAULT_USD_TO_INR_RATE;
-  } else if (normCurrency !== 'INR' && normCurrency !== '') {
-    errors.push(`Unsupported currency: "${currency}". Only INR and USD are supported.`);
-  }
+  const resolvedParticipants: { userId: string; userName: string }[] = [];
+  for (const rawName of splitWith) {
+    const key = rawName.trim().toLowerCase();
+    // Alias normalisation: "Priya S" / "priyas" → "Priya"
+    const aliasKey =
+      key === "priya s" || key === "priyas" ? "priya" : key;
 
-  // Keep internal precision to 4 decimal places
-  const rawBaseAmountINR = amount * exchangeRate;
-  const baseAmountINR = Math.round(rawBaseAmountINR * 10000) / 10000;
-
-  // Helper function to resolve case-insensitive user name to userId and correct casing name
-  const resolveUser = (name: string): { id: string; name: string } | null => {
-    const trimmed = name.trim().toLowerCase();
-    if (!trimmed) return null;
-    for (const [key, value] of Object.entries(userMap)) {
-      if (key.trim().toLowerCase() === trimmed) {
-        return { id: value, name: key };
-      }
-    }
-    return null;
-  };
-
-  // Resolve splitWith users
-  const resolvedSplitWith: { id: string; name: string; originalInputName: string }[] = [];
-  const splitWithUserIds = new Set<string>();
-
-  for (const name of splitWith) {
-    const resolved = resolveUser(name);
-    if (!resolved) {
-      errors.push(`Participant user "${name}" could not be found in the system.`);
+    const userId = nameToId[aliasKey];
+    const userName = nameToCanonical[aliasKey] ?? rawName.trim();
+    if (!userId) {
+      errors.push(`User "${rawName.trim()}" is not registered in the database.`);
     } else {
-      resolvedSplitWith.push({
-        id: resolved.id,
-        name: resolved.name,
-        originalInputName: name,
-      });
-      splitWithUserIds.add(resolved.id);
+      resolvedParticipants.push({ userId, userName });
     }
   }
 
-  if (errors.length > 0) {
-    return {
-      success: false,
-      errors,
-      splits: [],
-      baseAmountINR: Math.round(baseAmountINR * 100) / 100,
-    };
-  }
-
-  // 3. Temporal Checking
-  let timelines = membershipTimelines;
-  if (!timelines) {
-    timelines = {};
-    const resolvedIds = resolvedSplitWith.map(u => u.id);
-    try {
-      const dbMemberships = await prisma.groupMembership.findMany({
-        where: {
-          userId: { in: resolvedIds },
-        },
-      });
-      for (const m of dbMemberships) {
-        if (!timelines[m.userId]) {
-          timelines[m.userId] = [];
-        }
-        timelines[m.userId].push({
-          joinedAt: m.joinedAt,
-          leftAt: m.leftAt,
-        });
+  // ── 3. Temporal boundary validation ──────────────────────────────────────
+  if (membershipTimelines) {
+    const dateMs = date.getTime();
+    const dateLabel = date.toISOString().split("T")[0];
+    for (const { userId, userName } of resolvedParticipants) {
+      const timelines = membershipTimelines[userId];
+      if (!timelines || timelines.length === 0) {
+        errors.push(`${userName} has no recorded membership timeline.`);
+        continue;
       }
-    } catch (dbError) {
-      // If database query fails, we continue but warn/handle
-      console.warn('Database membership lookup failed, skipping DB temporal check:', dbError);
-    }
-  }
-
-  const expenseTime = new Date(date).getTime();
-  for (const user of resolvedSplitWith) {
-    const userPeriods = timelines[user.id] || [];
-    if (userPeriods.length > 0) {
-      const isActive = userPeriods.some(p => {
-        const joinedTime = new Date(p.joinedAt).getTime();
-        const leftTime = p.leftAt ? new Date(p.leftAt).getTime() : null;
-        return expenseTime >= joinedTime && (leftTime === null || expenseTime <= leftTime);
+      const isActive = timelines.some(({ joinedAt, leftAt }) => {
+        const joinMs = joinedAt.getTime();
+        const leftMs = leftAt ? leftAt.getTime() : Infinity;
+        return dateMs >= joinMs && dateMs <= leftMs;
       });
       if (!isActive) {
-        errors.push(`User ${user.name} was inactive on the expense date ${new Date(date).toISOString().split('T')[0]}.`);
+        errors.push(
+          `${userName} was inactive on the expense date ${dateLabel}. ` +
+          `Their membership does not cover this date.`
+        );
       }
     }
   }
 
-  // Keep track of internal share values (in INR, 4 decimal places)
-  const internalSharesMap: Record<string, number> = {};
-  for (const user of resolvedSplitWith) {
-    internalSharesMap[user.id] = 0;
-  }
-
-  // 4. Calculate splits based on type
-  if (splitType === 'equal') {
-    const individualShare = baseAmountINR / resolvedSplitWith.length;
-    for (const user of resolvedSplitWith) {
-      internalSharesMap[user.id] = Math.round(individualShare * 10000) / 10000;
-    }
-  } else {
-    // splitDetails is required for non-equal types
-    if (!splitDetails || splitDetails.trim() === '') {
-      errors.push(`Split details are required for split type "${splitType}".`);
-      return {
-        success: false,
-        errors,
-        splits: [],
-        baseAmountINR: Math.round(baseAmountINR * 100) / 100,
-      };
-    }
-
-    const parts = splitDetails
-      .split(';')
-      .map((p) => p.trim())
-      .filter(Boolean);
-
-    const parsedDetails: { userId: string; userName: string; value: number }[] = [];
-    const matchedDetailNames = new Set<string>();
-
-    for (const part of parts) {
-      const match = part.match(/^(.+?)\s+([\d.-]+)%?$/);
-      if (!match) {
-        errors.push(`Invalid split detail format: "${part}". Expected format like "User Name value".`);
-        continue;
-      }
-
-      const detailName = match[1].trim(); // Trimming whitespace
-      const value = parseFloat(match[2]);
-
-      if (isNaN(value)) {
-        errors.push(`Invalid numeric value in split detail: "${part}".`);
-        continue;
-      }
-
-      const resolved = resolveUser(detailName);
-      if (!resolved) {
-        errors.push(`User "${detailName}" in split details could not be found in the system.`);
-      } else if (!splitWithUserIds.has(resolved.id)) {
-        errors.push(`User "${resolved.name}" specified in split details is not present in the split participants (splitWith) list.`);
-      } else {
-        parsedDetails.push({
-          userId: resolved.id,
-          userName: resolved.name,
-          value,
-        });
-        matchedDetailNames.add(resolved.id);
-      }
-    }
-
-    if (errors.length > 0) {
-      return {
-        success: false,
-        errors,
-        splits: [],
-        baseAmountINR: Math.round(baseAmountINR * 100) / 100,
-      };
-    }
-
-    if (splitType === 'unequal') {
-      // Validate that raw parsed values sum matches total transaction amount
-      const totalParsedAmount = parsedDetails.reduce((sum, d) => sum + d.value, 0);
-      if (Math.abs(totalParsedAmount - amount) > 0.01) {
-        errors.push(`Sum of split details (${totalParsedAmount}) does not match the transaction amount (${amount}).`);
-      } else {
-        for (const detail of parsedDetails) {
-          const detailBaseAmountINR = detail.value * exchangeRate;
-          internalSharesMap[detail.userId] = Math.round(detailBaseAmountINR * 10000) / 10000;
-        }
-      }
-    } else if (splitType === 'percentage') {
-      const totalPercentage = parsedDetails.reduce((sum, d) => sum + d.value, 0);
-      if (Math.abs(totalPercentage - 100) > 0.0001) {
-        errors.push(`Sum of percentages (${totalPercentage}%) must equal 100%.`);
-      } else {
-        for (const detail of parsedDetails) {
-          const percentShare = baseAmountINR * (detail.value / 100.0);
-          internalSharesMap[detail.userId] = Math.round(percentShare * 10000) / 10000;
-        }
-      }
-    } else if (splitType === 'share') {
-      const totalShares = parsedDetails.reduce((sum, d) => sum + d.value, 0);
-      if (totalShares <= 0) {
-        errors.push(`Total shares must be greater than 0. Current total is ${totalShares}.`);
-      } else {
-        const perShareValue = baseAmountINR / totalShares;
-        for (const detail of parsedDetails) {
-          const userShare = perShareValue * detail.value;
-          internalSharesMap[detail.userId] = Math.round(userShare * 10000) / 10000;
-        }
-      }
-    }
-  }
-
+  // Stop early if we already have blocking errors (unregistered or inactive members)
   if (errors.length > 0) {
+    return { success: false, errors, baseAmountINR, splits: [] };
+  }
+
+  if (resolvedParticipants.length === 0) {
     return {
       success: false,
-      errors,
+      errors: ["No valid participants found for this split."],
+      baseAmountINR,
       splits: [],
-      baseAmountINR: Math.round(baseAmountINR * 100) / 100,
     };
   }
 
-  // 5. Build preliminary rounded values (final output to 2 decimal places)
-  const calculatedSplits = resolvedSplitWith.map((user) => {
-    const internalShare = internalSharesMap[user.id] || 0;
-    const owedAmount = Math.round(internalShare * 100) / 100;
-    return {
-      userId: user.id,
-      userName: user.name,
-      owedAmount,
-    };
-  });
+  // ── 4. Split calculation ──────────────────────────────────────────────────
+  const splits: SplitResult[] = [];
+  const n = resolvedParticipants.length;
 
-  // 6. Rounding adjustment: distribute any fractional remaining pennies evenly
-  const finalBaseAmountINR = Math.round(baseAmountINR * 100) / 100;
-  const targetCents = Math.round(finalBaseAmountINR * 100);
-  const sumRoundedCents = calculatedSplits.reduce((sum, s) => sum + Math.round(s.owedAmount * 100), 0);
-  let remainingCents = targetCents - sumRoundedCents;
-
-  if (remainingCents !== 0 && calculatedSplits.length > 0) {
-    const step = Math.sign(remainingCents); // +1 or -1 cent
-    let idx = 0;
-    while (remainingCents !== 0) {
-      calculatedSplits[idx].owedAmount = Math.round((calculatedSplits[idx].owedAmount + step * 0.01) * 100) / 100;
-      remainingCents -= step;
-      idx = (idx + 1) % calculatedSplits.length; // distribute evenly one penny at a time
+  if (!splitType || splitType === "equal") {
+    // Equal: distribute cents-first then give remainder pennies to first person
+    const totalCents = Math.round(baseAmountINR * 100);
+    const shareCents = Math.floor(totalCents / n);
+    const remainderCents = totalCents % n;
+    for (let i = 0; i < n; i++) {
+      splits.push({
+        ...resolvedParticipants[i],
+        owedAmount: (shareCents + (i === 0 ? remainderCents : 0)) / 100,
+      });
+    }
+  } else if (splitType === "unequal") {
+    // Unequal: parse "Name Amount; Name Amount" pairs
+    if (!splitDetails || splitDetails.trim() === "") {
+      return {
+        success: false,
+        errors: ["Split details are required for unequal splits."],
+        baseAmountINR,
+        splits: [],
+      };
+    }
+    const pairs = splitDetails.split(";").map((s) => s.trim()).filter(Boolean);
+    let detailsSum = 0;
+    const detailMap: Record<string, number> = {};
+    for (const pair of pairs) {
+      // Match "Name 700" or "Name 700.50"
+      const match = pair.match(/^(.+?)\s+([\d.]+)$/);
+      if (!match) {
+        errors.push(`Cannot parse unequal split entry: "${pair}"`);
+        continue;
+      }
+      const pairName = match[1].trim().toLowerCase();
+      const aliasKey = pairName === "priya s" || pairName === "priyas" ? "priya" : pairName;
+      const canonical = nameToCanonical[aliasKey] ?? match[1].trim();
+      const pairAmount = parseFloat(match[2]);
+      detailMap[canonical] = pairAmount;
+      detailsSum += pairAmount;
+    }
+    if (errors.length > 0) {
+      return { success: false, errors, baseAmountINR, splits: [] };
+    }
+    // Validate sum matches transaction total (within ₹0.01 tolerance)
+    if (Math.abs(detailsSum - baseAmountINR) > 0.01) {
+      return {
+        success: false,
+        errors: [
+          `Unequal split details sum (${detailsSum.toFixed(2)}) does not match the transaction amount (${baseAmountINR.toFixed(2)}).`,
+        ],
+        baseAmountINR,
+        splits: [],
+      };
+    }
+    for (const p of resolvedParticipants) {
+      if (detailMap[p.userName] === undefined) {
+        errors.push(`No amount specified for "${p.userName}" in unequal split details.`);
+      } else {
+        splits.push({ ...p, owedAmount: detailMap[p.userName] });
+      }
+    }
+    if (errors.length > 0) {
+      return { success: false, errors, baseAmountINR, splits: [] };
+    }
+  } else if (splitType === "percentage") {
+    // Percentage: parse "Name 30%; Name 30%" pairs
+    if (!splitDetails || splitDetails.trim() === "") {
+      return {
+        success: false,
+        errors: ["Split details are required for percentage splits."],
+        baseAmountINR,
+        splits: [],
+      };
+    }
+    const pairs = splitDetails.split(";").map((s) => s.trim()).filter(Boolean);
+    let totalPct = 0;
+    const pctMap: Record<string, number> = {};
+    for (const pair of pairs) {
+      const match = pair.match(/^(.+?)\s+([\d.]+)%?$/);
+      if (!match) {
+        errors.push(`Cannot parse percentage entry: "${pair}"`);
+        continue;
+      }
+      const pairName = match[1].trim().toLowerCase();
+      const aliasKey = pairName === "priya s" || pairName === "priyas" ? "priya" : pairName;
+      const canonical = nameToCanonical[aliasKey] ?? match[1].trim();
+      const pct = parseFloat(match[2]);
+      pctMap[canonical] = pct;
+      totalPct += pct;
+    }
+    if (errors.length > 0) {
+      return { success: false, errors, baseAmountINR, splits: [] };
+    }
+    if (Math.abs(totalPct - 100) > 0.1) {
+      return {
+        success: false,
+        errors: [`Percentage split details must equal 100% (got ${totalPct.toFixed(1)}%).`],
+        baseAmountINR,
+        splits: [],
+      };
+    }
+    // Convert percentages → INR amounts with cent-remainder on first person
+    const totalCents = Math.round(baseAmountINR * 100);
+    let allocatedCents = 0;
+    for (let i = 0; i < resolvedParticipants.length; i++) {
+      const p = resolvedParticipants[i];
+      const pct = pctMap[p.userName];
+      if (pct === undefined) {
+        errors.push(`No percentage specified for "${p.userName}".`);
+        continue;
+      }
+      let shareCents: number;
+      if (i === resolvedParticipants.length - 1) {
+        // Last person absorbs any rounding remainder
+        shareCents = totalCents - allocatedCents;
+      } else {
+        shareCents = Math.round((pct / 100) * totalCents);
+        allocatedCents += shareCents;
+      }
+      splits.push({ ...p, owedAmount: shareCents / 100 });
+    }
+    if (errors.length > 0) {
+      return { success: false, errors, baseAmountINR, splits: [] };
+    }
+  } else if (splitType === "share") {
+    // Share: parse "Name 1; Name 2" ratio-based splits
+    if (!splitDetails || splitDetails.trim() === "") {
+      return {
+        success: false,
+        errors: ["Split details are required for share splits."],
+        baseAmountINR,
+        splits: [],
+      };
+    }
+    const pairs = splitDetails.split(";").map((s) => s.trim()).filter(Boolean);
+    let totalShares = 0;
+    const shareMap: Record<string, number> = {};
+    for (const pair of pairs) {
+      const match = pair.match(/^(.+?)\s+([\d.]+)$/);
+      if (!match) {
+        errors.push(`Cannot parse share entry: "${pair}"`);
+        continue;
+      }
+      const pairName = match[1].trim().toLowerCase();
+      const aliasKey = pairName === "priya s" || pairName === "priyas" ? "priya" : pairName;
+      const canonical = nameToCanonical[aliasKey] ?? match[1].trim();
+      const shareVal = parseFloat(match[2]);
+      shareMap[canonical] = shareVal;
+      totalShares += shareVal;
+    }
+    if (errors.length > 0) {
+      return { success: false, errors, baseAmountINR, splits: [] };
+    }
+    if (totalShares === 0) {
+      return {
+        success: false,
+        errors: ["Share split total is zero — cannot divide."],
+        baseAmountINR,
+        splits: [],
+      };
+    }
+    const totalCents = Math.round(baseAmountINR * 100);
+    let allocatedCents = 0;
+    for (let i = 0; i < resolvedParticipants.length; i++) {
+      const p = resolvedParticipants[i];
+      const shares = shareMap[p.userName];
+      if (shares === undefined) {
+        errors.push(`No share count specified for "${p.userName}".`);
+        continue;
+      }
+      let shareCents: number;
+      if (i === resolvedParticipants.length - 1) {
+        shareCents = totalCents - allocatedCents;
+      } else {
+        shareCents = Math.round((shares / totalShares) * totalCents);
+        allocatedCents += shareCents;
+      }
+      splits.push({ ...p, owedAmount: shareCents / 100 });
+    }
+    if (errors.length > 0) {
+      return { success: false, errors, baseAmountINR, splits: [] };
+    }
+  } else {
+    // Unknown split type — fall back to equal
+    const totalCents = Math.round(baseAmountINR * 100);
+    const shareCents = Math.floor(totalCents / n);
+    const remainderCents = totalCents % n;
+    for (let i = 0; i < n; i++) {
+      splits.push({
+        ...resolvedParticipants[i],
+        owedAmount: (shareCents + (i === 0 ? remainderCents : 0)) / 100,
+      });
     }
   }
 
-  return {
-    success: true,
-    errors: [],
-    splits: calculatedSplits,
-    baseAmountINR: finalBaseAmountINR,
-  };
+  return { success: true, errors: [], baseAmountINR, splits };
 }

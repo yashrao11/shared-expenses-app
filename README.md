@@ -95,6 +95,6 @@ We built an **Isolated Staging Area** (`StagedExpense` table) and an **Interacti
 
 ## 🤖 AI Development Collaboration
 
-This project was developed in partnership with **Gemini 3.5 Flash**, working as an agentic AI coding companion. The developer reviewed, verified, and manually corrected the mathematical engine boundaries, temporal query checks, and string parsers to guarantee correct production ledgers. 
+This project was developed in partnership with **Gemini 2.5 Flash**, working as an agentic AI coding companion. The developer reviewed, verified, and manually corrected the mathematical engine boundaries, temporal query checks, and string parsers to guarantee correct production ledgers. 
 
 For full details on prompts, bugs caught, and code modifications, see the [AI_USAGE.md](file:///Users/yashrao/Documents/YASH%20RAO/To%20MAANG/Companies/Spreetail/shared-expenses-app/AI_USAGE.md) log.

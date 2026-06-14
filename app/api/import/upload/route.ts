@@ -1,280 +1,301 @@
-import { NextResponse } from 'next/server';
-import fs from 'fs';
-import path from 'path';
-import { parse } from 'csv-parse/sync';
-import prisma from '@/lib/db';
+import { NextResponse } from "next/server";
+import fs from "fs";
+import path from "path";
+import { parse } from "csv-parse/sync";
+import db from "@/lib/db";
+import { calculateSplits } from "@/lib/splittingEngine";
 
-interface CSVRow {
-  date: string;
-  description: string;
-  paid_by: string;
-  amount: string;
-  currency: string;
-  split_type: string;
-  split_with: string;
-  split_details: string;
-  notes: string;
+// Helper to normalize and match roommate names
+function normalizeName(name: string): string {
+  const cleaned = name.trim().toLowerCase();
+  if (cleaned === "priya s" || cleaned === "priyas") return "Priya";
+  if (cleaned === "rohan") return "Rohan";
+  // Capitalize first letter as default
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+}
+
+// Helper to parse dates in various CSV formats
+function parseCSVDate(dateStr: string): Date {
+  const cleaned = dateStr.trim();
+  // Handle Mar-14 format
+  if (cleaned.includes("-") && isNaN(Number(cleaned.split("-")[0]))) {
+    const parts = cleaned.split("-");
+    const monthMap: { [key: string]: number } = {
+      jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+      jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
+    };
+    const month = monthMap[parts[0].toLowerCase()] ?? 2; // Default to March
+    const day = parseInt(parts[1], 10);
+    return new Date(2026, month, day);
+  }
+  // Handle standard DD-MM-YYYY format
+  if (cleaned.includes("-")) {
+    const parts = cleaned.split("-");
+    if (parts.length === 3) {
+      const day = parseInt(parts[0], 10);
+      const month = parseInt(parts[1], 10) - 1;
+      const year = parseInt(parts[2], 10);
+      return new Date(year, month, day);
+    }
+  }
+  return new Date(cleaned);
 }
 
 export async function POST() {
   try {
-    // 1. Read the raw text of the file from server filesystem
-    const filePath = path.join(process.cwd(), 'data', 'expenses_export.csv');
-    if (!fs.existsSync(filePath)) {
-      return NextResponse.json(
-        { success: false, error: 'CSV export file not found on server.' },
-        { status: 404 }
-      );
+    const csvFilePath = path.join(process.cwd(), "data", "expenses_export.csv");
+    if (!fs.existsSync(csvFilePath)) {
+      return NextResponse.json({ error: "CSV file not found at data/expenses_export.csv" }, { status: 404 });
     }
-    const csvContent = fs.readFileSync(filePath, 'utf-8');
 
-    // 2. Parse it using the "csv-parse" library
-    const records: CSVRow[] = parse(csvContent, {
+    const fileContent = fs.readFileSync(csvFilePath, "utf-8");
+    const records: Record<string, string>[] = parse(fileContent, {
       columns: true,
       skip_empty_lines: true,
-      trim: false, // keep original spaces for whitespace checks
+      trim: true,
     });
 
-    // 3. Create an "ImportSession" in the database
-    const session = await prisma.importSession.create({
-      data: {
-        status: 'PENDING',
-      },
-    });
-
-    // 4. Pre-fetch database users and memberships for memory-based checks
-    const dbUsers = await prisma.user.findMany();
-    const dbMemberships = await prisma.groupMembership.findMany();
-
-    const userMap: Record<string, string> = {};
-    for (const user of dbUsers) {
-      userMap[user.name.trim().toLowerCase()] = user.id;
+    // Fetch database users and group for validations
+    const users = await db.user.findMany();
+    const group = await db.group.findFirst();
+    if (!group) {
+      return NextResponse.json({ error: "Default group not found. Run migrations and seeds first." }, { status: 500 });
     }
 
-    const resolveUserId = (name: string): string | null => {
-      const trimmed = name.trim().toLowerCase();
-      return userMap[trimmed] || null;
-    };
+    const validUserNames = new Set(users.map(u => u.name));
 
-    // Helper to parse dates like "01-02-2026" or "Mar-14"
-    const parseCSVDate = (dateStr: string): Date => {
-      const cleanStr = dateStr.trim();
-      const parts = cleanStr.split('-');
-      if (parts.length === 3) {
-        const d = parseInt(parts[0]);
-        const m = parseInt(parts[1]) - 1;
-        const y = parseInt(parts[2]);
-        return new Date(Date.UTC(y, m, d));
-      }
-      if (parts.length === 2) {
-        const months: Record<string, number> = {
-          jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
-          jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11
-        };
-        const monthPart = parts[0].toLowerCase().substring(0, 3);
-        const dayPart = parseInt(parts[1]);
-        if (monthPart in months && !isNaN(dayPart)) {
-          return new Date(Date.UTC(2026, months[monthPart], dayPart));
+    // Create an import session
+    const session = await db.importSession.create({
+      data: { status: "PROCESSING" }
+    });
+
+    let autoCommittedCount = 0;
+    let stagedCount = 0;
+
+    // We process sequentially to detect duplicate entries across rows
+    const processedHistory: Array<{ date: string; amount: number; desc: string }> = [];
+
+    for (let i = 0; i < records.length; i++) {
+      const row = records[i];
+      const anomalies: string[] = [];
+      const rowNum = i + 1;
+
+      // Extract raw properties
+      const rawDateStr = row.date;
+      const rawDesc = row.description;
+      const rawPaidBy = row.paid_by;
+      let rawAmountStr = row.amount;
+      const rawCurrency = row.currency;
+      const rawSplitType = row.split_type;
+      const rawSplitWith = row.split_with;
+      const rawSplitDetails = row.split_details;
+      const rawNotes = row.notes;
+
+      // Parse and normalize amount
+      let parsedAmount = 0;
+      if (!rawAmountStr || rawAmountStr.trim() === "" || rawAmountStr.trim() === "0") {
+        parsedAmount = 0;
+      } else {
+        // Strip commas and quotes
+        const cleanedAmountStr = rawAmountStr.replace(/["',]/g, "").trim();
+        parsedAmount = parseFloat(cleanedAmountStr);
+        if (isNaN(parsedAmount)) {
+          anomalies.push("BAD_NUMBER_FORMAT");
+        } else if (cleanedAmountStr.split(".")[1]?.length > 2) {
+          anomalies.push("HIGH_PRECISION_LIMIT");
         }
       }
-      return new Date(cleanStr);
-    };
 
-    // Clean description similarity helper for Check 10 (Duplicates)
-    const areDescriptionsSimilar = (desc1: string, desc2: string): boolean => {
-      const d1 = desc1.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-      const d2 = desc2.toLowerCase().replace(/[^a-z0-9\s]/g, '').split(/\s+/).filter(Boolean);
-      const stopWords = new Set(['at', 'for', 'the', 'in', 'to', 'and', 'or', 'a', 'an', 'of', 'on', 'with', 'bill']);
-      const w1 = d1.filter(w => !stopWords.has(w));
-      const w2 = d2.filter(w => !stopWords.has(w));
-      const common = w1.filter(w => w2.includes(w));
-      return common.some(w => w.length >= 3);
-    };
+      // Check Missing Payer
+      if (!rawPaidBy || rawPaidBy.trim() === "") {
+        anomalies.push("MISSING_PAYER");
+      }
 
-    // Parse all rows clean details for comparisons
-    interface ProcessedRow {
-      rowIndex: number;
-      rawRow: CSVRow;
-      parsedDate: Date;
-      amountValue: number;
-      anomalies: string[];
-    }
+      // Check Missing Currency
+      if (!rawCurrency || rawCurrency.trim() === "") {
+        anomalies.push("MISSING_CURRENCY");
+      }
 
-    const processedRows: ProcessedRow[] = [];
+      // Normalize Payer Name
+      let matchedPayer = null;
+      if (rawPaidBy && rawPaidBy.trim() !== "") {
+        const normalizedPayer = normalizeName(rawPaidBy);
+        if (rawPaidBy.trim() !== normalizedPayer) {
+          anomalies.push("NAME_INCONSISTENCY");
+        }
+        matchedPayer = users.find(u => u.name === normalizedPayer);
+        if (!matchedPayer) {
+          anomalies.push("UNREGISTERED_MEMBER");
+        }
+      }
 
-    for (let idx = 0; idx < records.length; idx++) {
-      const row = records[idx];
-      const rawAmount = row.amount || '';
-      const cleanAmountStr = rawAmount.replace(/,/g, '').trim();
-      const amountValue = parseFloat(cleanAmountStr) || 0;
+      // Parse and Normalize Split-With roommates
+      const splitWithNames: string[] = [];
+      if (rawSplitWith && rawSplitWith.trim() !== "") {
+        const rawNames = rawSplitWith.split(";");
+        for (const rawName of rawNames) {
+          const cleanedName = normalizeName(rawName);
+          splitWithNames.push(cleanedName);
+          if (!validUserNames.has(cleanedName)) {
+            anomalies.push("UNREGISTERED_MEMBER");
+          }
+        }
+      }
+
+      // Check Duplicates (Compare against previous rows in this file)
+      const isDuplicate = processedHistory.some(h => 
+        h.date === rawDateStr && 
+        h.amount === parsedAmount && 
+        (h.desc.toLowerCase().includes(rawDesc.toLowerCase()) || rawDesc.toLowerCase().includes(h.desc.toLowerCase()))
+      );
+      if (isDuplicate) {
+        anomalies.push("POTENTIAL_DUPLICATE");
+      }
+      processedHistory.push({ date: rawDateStr, amount: parsedAmount, desc: rawDesc });
+
+      // Check Settlements
+      const isSettlement = !rawSplitType || rawSplitType.trim() === "" || rawDesc.toLowerCase().includes("paid back") || rawDesc.toLowerCase().includes("deposit");
+      if (isSettlement) {
+        anomalies.push("IS_SETTLEMENT");
+      }
+
+      // Parse Date and validate Temporal boundaries
       let parsedDate = new Date();
       try {
-        parsedDate = parseCSVDate(row.date);
+        parsedDate = parseCSVDate(rawDateStr);
+        // Check active timelines for members in split
+        for (const name of splitWithNames) {
+          const dbUser = users.find(u => u.name === name);
+          if (dbUser) {
+            const membership = await db.groupMembership.findFirst({
+              where: {
+                userId: dbUser.id,
+                groupId: group.id,
+                joinedAt: { lte: parsedDate },
+                OR: [
+                  { leftAt: null },
+                  { leftAt: { gte: parsedDate } }
+                ]
+              }
+            });
+            if (!membership) {
+              anomalies.push("TEMPORAL_MEMBERSHIP_VIOLATION");
+            }
+          }
+        }
       } catch (err) {
-        // Fallback
+        anomalies.push("INVALID_DATE_FORMAT");
       }
 
-      processedRows.push({
-        rowIndex: idx + 1,
-        rawRow: row,
-        parsedDate,
-        amountValue,
-        anomalies: [],
-      });
-    }
-
-    // Run the 10 distinct validation checks on each row
-    for (let i = 0; i < processedRows.length; i++) {
-      const rowA = processedRows[i];
-      const rawRow = rowA.rawRow;
-      const anomalies = rowA.anomalies;
-
-      const paidByRaw = rawRow.paid_by || '';
-      const paidByTrimmed = paidByRaw.trim();
-
-      // Check 1 (Empty Payer)
-      if (!paidByRaw || !paidByTrimmed) {
-        anomalies.push('MISSING_PAYER');
-      }
-
-      // Check 2 (Name Aliasing / inconsistency)
-      if (paidByRaw && (
-        paidByRaw.includes('Priya S') || 
-        paidByRaw.startsWith(' ') || 
-        paidByRaw.endsWith(' ') ||
-        paidByRaw.toLowerCase() === 'priya s' ||
-        paidByRaw.toLowerCase() === 'rohan '
-      )) {
-        anomalies.push('NAME_INCONSISTENCY');
-      }
-
-      // Check 3 (Number Formatting)
-      if (rawRow.amount && rawRow.amount.includes(',')) {
-        anomalies.push('BAD_NUMBER_FORMAT');
-      }
-
-      // Check 4 (Precision Limit)
-      const decimalPart = (rawRow.amount || '').split('.')[1] || '';
-      if (decimalPart.length > 2) {
-        anomalies.push('HIGH_PRECISION_LIMIT');
-      }
-
-      // Check 5 (Currency Omission)
-      const currency = (rawRow.currency || '').trim();
-      if (!currency) {
-        anomalies.push('MISSING_CURRENCY');
-      }
-
-      // Check 6 (Settlement Detection)
-      const splitType = (rawRow.split_type || '').trim();
-      const descLower = (rawRow.description || '').toLowerCase();
-      const notesLower = (rawRow.notes || '').toLowerCase();
-      if (!splitType || descLower.includes('settlement') || descLower.includes('paid back') || notesLower.includes('settlement') || notesLower.includes('paid back')) {
-        anomalies.push('IS_SETTLEMENT');
-      }
-
-      // Check 7 (Percentage Math)
-      if (splitType === 'percentage' && rawRow.split_details) {
-        const parts = rawRow.split_details.split(';').map(p => p.trim()).filter(Boolean);
-        let totalPct = 0;
-        for (const part of parts) {
-          const m = part.match(/^(.+?)\s+([\d.-]+)%?$/);
-          if (m) {
-            totalPct += parseFloat(m[2]);
+      // Check Percentage Splits Math
+      if (rawSplitType === "percentage" && rawSplitDetails) {
+        const pctMatches = rawSplitDetails.match(/[\d.]+(?=%)/g);
+        if (pctMatches) {
+          const totalPct = pctMatches.map(Number).reduce((sum: number, val: number) => sum + val, 0);
+          if (Math.abs(totalPct - 100) > 0.1) {
+            anomalies.push("PERCENTAGE_MATH_MISMATCH");
           }
         }
-        if (Math.abs(totalPct - 100) > 0.0001) {
-          anomalies.push('PERCENTAGE_MATH_MISMATCH');
-        }
       }
 
-      // Check 8 (Temporal check) & Check 9 (Unregistered members)
-      const splitWithNames = (rawRow.split_with || '')
-        .split(';')
-        .map(n => n.trim())
-        .filter(Boolean);
+      const hasCriticalAnomalies = anomalies.some(a => 
+        ["MISSING_PAYER", "UNREGISTERED_MEMBER", "PERCENTAGE_MATH_MISMATCH", "POTENTIAL_DUPLICATE", "TEMPORAL_MEMBERSHIP_VIOLATION", "BAD_NUMBER_FORMAT"].includes(a)
+      );
 
-      const expenseTime = rowA.parsedDate.getTime();
+      // POLICY DECISION: If there are no critical anomalies, commit directly to production!
+      if (!hasCriticalAnomalies && matchedPayer && parsedAmount > 0) {
+        const finalCurrency = rawCurrency || "INR";
+        const exchangeRate = finalCurrency.toUpperCase() === "USD" ? 83.0 : 1.0;
+        const normalizedAmount = parsedAmount * exchangeRate;
 
-      for (const name of splitWithNames) {
-        const userId = resolveUserId(name);
-        if (!userId) {
-          // Unregistered member
-          if (!anomalies.includes('UNREGISTERED_MEMBER')) {
-            anomalies.push('UNREGISTERED_MEMBER');
-          }
-        } else {
-          // Temporal boundary check
-          const userMemberships = dbMemberships.filter(m => m.userId === userId);
-          const hasActiveMembership = userMemberships.some(m => {
-            const joinedTime = new Date(m.joinedAt).getTime();
-            const leftTime = m.leftAt ? new Date(m.leftAt).getTime() : null;
-            return expenseTime >= joinedTime && (leftTime === null || expenseTime <= leftTime);
+        // Build a name→id map for the engine
+        const userMap: Record<string, string> = {};
+        for (const u of users) userMap[u.name] = u.id;
+
+        // Call the full splitting engine
+        const splitResult = await calculateSplits(
+          {
+            amount: parsedAmount,
+            currency: finalCurrency,
+            date: parsedDate,
+            splitType: rawSplitType || "equal",
+            splitWith: splitWithNames,
+            splitDetails: rawSplitDetails || undefined,
+          },
+          userMap
+        );
+
+        await db.$transaction(async (tx) => {
+          const expense = await tx.expense.create({
+            data: {
+              groupId: group.id,
+              paidById: matchedPayer.id,
+              description: rawDesc,
+              amount: splitResult.baseAmountINR,
+              rawAmount: parsedAmount,
+              currency: finalCurrency,
+              exchangeRate,
+              date: parsedDate,
+              splitType: rawSplitType || "equal",
+              isSettlement: false,
+              notes: rawNotes || null
+            }
           });
-          if (!hasActiveMembership && !anomalies.includes('TEMPORAL_MEMBERSHIP_VIOLATION')) {
-            anomalies.push('TEMPORAL_MEMBERSHIP_VIOLATION');
-          }
-        }
-      }
 
-      // Check 10 (Duplicates)
-      for (let j = 0; j < processedRows.length; j++) {
-        if (i === j) continue;
-        const rowB = processedRows[j];
-        if (
-          rowA.parsedDate.getTime() === rowB.parsedDate.getTime() &&
-          rowA.amountValue === rowB.amountValue &&
-          areDescriptionsSimilar(rawRow.description || '', rowB.rawRow.description || '')
-        ) {
-          if (!anomalies.includes('POTENTIAL_DUPLICATE')) {
-            anomalies.push('POTENTIAL_DUPLICATE');
+          for (const split of splitResult.splits) {
+            await tx.expenseSplit.create({
+              data: {
+                expenseId: expense.id,
+                userId: split.userId,
+                owedAmount: split.owedAmount
+              }
+            });
           }
-          break;
-        }
+        });
+
+        // Save to staging as AUTO-APPROVED
+        await db.stagedExpense.create({
+          data: {
+            sessionId: session.id,
+            rawRowNumber: rowNum,
+            rawData: JSON.stringify(row),
+            detectedAnomalies: JSON.stringify(Array.from(new Set(anomalies))),
+            status: "APPROVED",
+            resolvedPayerId: matchedPayer.id,
+            resolvedAmount: normalizedAmount
+          }
+        });
+        autoCommittedCount++;
+      } else {
+        // Pause in staging area for manual human-in-the-loop validation
+        await db.stagedExpense.create({
+          data: {
+            sessionId: session.id,
+            rawRowNumber: rowNum,
+            rawData: JSON.stringify(row),
+            detectedAnomalies: JSON.stringify(Array.from(new Set(anomalies))),
+            status: "PENDING_APPROVAL"
+          }
+        });
+        stagedCount++;
       }
     }
 
-    // 5. Save every row to the "StagedExpense" table
-    const createdStagedExpenses = [];
-    for (const prow of processedRows) {
-      const staged = await prisma.stagedExpense.create({
-        data: {
-          sessionId: session.id,
-          rawRowNumber: prow.rowIndex,
-          rawData: JSON.stringify(prow.rawRow),
-          detectedAnomalies: JSON.stringify(prow.anomalies),
-          status: 'PENDING_APPROVAL',
-        },
-      });
-      createdStagedExpenses.push({
-        id: staged.id,
-        rawRowNumber: prow.rowIndex,
-        rawData: prow.rawRow,
-        anomalies: prow.anomalies,
-      });
-    }
-
-    // Update session status to COMPLETED
-    await prisma.importSession.update({
+    await db.importSession.update({
       where: { id: session.id },
-      data: { status: 'COMPLETED' },
+      data: { status: "COMPLETED" }
     });
 
-    const rowsWithAnomalies = createdStagedExpenses.filter(r => r.anomalies.length > 0);
-
-    // 6. Return response
     return NextResponse.json({
       success: true,
       sessionId: session.id,
-      totalRowsProcessed: records.length,
-      anomaliesCount: rowsWithAnomalies.length,
-      stagedExpenses: createdStagedExpenses,
+      totalRows: records.length,
+      autoCommitted: autoCommittedCount,
+      stagedPending: stagedCount
     });
-  } catch (err: any) {
-    console.error('Error uploading CSV to staging:', err);
-    return NextResponse.json(
-      { success: false, error: err.message || 'An error occurred during upload.' },
-      { status: 500 }
-    );
+
+  } catch (error: any) {
+    console.error("Ingestion failed:", error);
+    return NextResponse.json({ error: "Internal server error during CSV processing.", details: error.message }, { status: 500 });
   }
 }

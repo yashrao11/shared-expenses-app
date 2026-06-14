@@ -1,6 +1,6 @@
 # AI Collaboration & Engineering Override Log
 
-This document outlines our collaborative workflow with AI coding assistants (specifically **Gemini 3.5 Flash** and agentic extensions) used during the development of this shared expenses application. While AI was utilized to draft initial boilerplate templates and structural formats, the engineering of record reviewed, verified, and manually rewrote multiple sections to address critical logic failures.
+This document outlines our collaborative workflow with AI coding assistants (specifically **Gemini 2.5 Flash** and agentic extensions) used during the development of this shared expenses application. While AI was utilized to draft initial boilerplate templates and structural formats, the engineering of record reviewed, verified, and manually rewrote multiple sections to address critical logic failures.
 
 ---
 

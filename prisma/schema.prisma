@@ -83,5 +83,7 @@ model StagedExpense {
   rawData           String        // Serialized JSON of original CSV text
   detectedAnomalies String        // Serialized JSON array of anomaly strings
   status            String        // "PENDING_APPROVAL", "APPROVED", "REJECTED", "RESOLVED"
+  resolvedPayerId   String?       // <--- ADD THIS LINE
+  resolvedAmount    Float?        // <--- ADD THIS LINE
   session           ImportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 }

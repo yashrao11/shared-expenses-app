@@ -47,25 +47,25 @@ async function main() {
     {
       userId: createdUsers['Aisha'].id,
       groupId: group.id,
-      joinedAt: new Date('2026-02-01T00:00:00Z'),
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'), // Jan 1 avoids timezone offsets on Feb 1 expenses
       leftAt: null,
     },
     {
       userId: createdUsers['Rohan'].id,
       groupId: group.id,
-      joinedAt: new Date('2026-02-01T00:00:00Z'),
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'), // Jan 1 avoids timezone offsets on Feb 1 expenses
       leftAt: null,
     },
     {
       userId: createdUsers['Priya'].id,
       groupId: group.id,
-      joinedAt: new Date('2026-02-01T00:00:00Z'),
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'), // Jan 1 avoids timezone offsets on Feb 1 expenses
       leftAt: null,
     },
     {
       userId: createdUsers['Meera'].id,
       groupId: group.id,
-      joinedAt: new Date('2026-02-01T00:00:00Z'),
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'), // Jan 1 avoids timezone offsets on Feb 1 expenses
       leftAt: new Date('2026-03-31T23:59:59Z'), // left Mar 31, 2026
     },
     {
@@ -77,7 +77,7 @@ async function main() {
     {
       userId: createdUsers['Dev'].id,
       groupId: group.id,
-      joinedAt: new Date('2026-02-01T00:00:00Z'),
+      joinedAt: new Date('2026-01-01T00:00:00.000Z'), // Jan 1 avoids timezone offsets on Feb 1 expenses
       leftAt: null, // Temporary for trip, but active
     },
     {
