@@ -8,7 +8,7 @@ SplitSmart has been designed as a professional-grade software engineering soluti
 
 ## 🚀 Live Application & Deployment Details
 
-- **Deployment URL:** [http://localhost:3001](http://localhost:3001) (Local Development Instance)
+- **Deployment URL:** *https://shared-expenses-app-nkef.onrender.com/*
 - **Database Engine:** Relational SQLite Database managed via Prisma ORM.
 
 ---
