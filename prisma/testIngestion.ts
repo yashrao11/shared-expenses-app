@@ -279,7 +279,8 @@ async function testIngestionWorkflow() {
             groupId: mainGroup.id,
             paidById: resolvedPayer.id,
             description: raw.description,
-            amount: amountVal,
+            amount: result.baseAmountINR,
+            rawAmount: amountVal,
             currency: raw.currency,
             date: parseCSVDate(raw.date),
             splitType: raw.split_type,
@@ -299,7 +300,7 @@ async function testIngestionWorkflow() {
 
         await tx.stagedExpense.update({
           where: { id: cleanStaged.id },
-          data: { status: 'APPROVED', resolvedPayerId: resolvedPayer.id, resolvedAmount: result.baseAmountINR },
+          data: { status: 'APPROVED' },
         });
       });
       console.log('   - Row 1 approval: SUCCESS');
@@ -338,7 +339,8 @@ async function testIngestionWorkflow() {
             groupId: mainGroup.id,
             paidById: resolvedPayer.id,
             description: raw.description,
-            amount: amountVal,
+            amount: result.baseAmountINR,
+            rawAmount: amountVal,
             currency: raw.currency,
             date: parseCSVDate(raw.date),
             splitType: raw.split_type,
@@ -359,7 +361,7 @@ async function testIngestionWorkflow() {
 
         await tx.stagedExpense.update({
           where: { id: anomalyStaged.id },
-          data: { status: 'RESOLVED', resolvedPayerId: resolvedPayer.id, resolvedAmount: result.baseAmountINR },
+          data: { status: 'RESOLVED' },
         });
       });
       console.log('   - Row 15 resolution with overrides: SUCCESS');

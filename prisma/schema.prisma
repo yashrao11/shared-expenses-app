@@ -1,33 +1,29 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-generator client {
-  provider = "prisma-client-js"
-}
-
 datasource db {
   provider = "sqlite"
   url      = "file:./dev.db"
 }
 
+generator client {
+  provider = "prisma-client-js"
+}
+
 model User {
-  id                    String            @id @default(uuid())
-  name                  String            @unique
-  createdAt             DateTime          @default(now())
-  updatedAt             DateTime          @updatedAt
-  memberships           GroupMembership[]
-  expensesPaid          Expense[]         @relation("PaidBy")
-  expenseSplits         ExpenseSplit[]
-  resolvedStagedExpenses StagedExpense[]
+  id               String            @id @default(uuid())
+  name             String            @unique
+  memberships      GroupMembership[]
+  paidExpenses     Expense[]         @relation("PaidExpenses")
+  expenseSplits    ExpenseSplit[]
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 }
 
 model Group {
   id          String            @id @default(uuid())
   name        String
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
   memberships GroupMembership[]
   expenses    Expense[]
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
 }
 
 model GroupMembership {
@@ -35,53 +31,57 @@ model GroupMembership {
   groupId   String
   userId    String
   joinedAt  DateTime
-  leftAt    DateTime?
+  leftAt    DateTime? // NULL indicates membership is active
   group     Group     @relation(fields: [groupId], references: [id], onDelete: Cascade)
   user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([groupId, userId])
 }
 
 model Expense {
-  id           String         @id @default(uuid())
-  groupId      String
-  paidById     String
-  description  String
-  amount       Float
-  currency     String
-  exchangeRate Float          @default(1.0)
-  date         DateTime
-  splitType    String
-  isSettlement Boolean        @default(false)
-  notes        String?
-  group        Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  paidBy       User           @relation("PaidBy", fields: [paidById], references: [id], onDelete: Cascade)
-  splits       ExpenseSplit[]
+  id            String         @id @default(uuid())
+  groupId       String
+  paidById      String
+  description   String
+  amount        Float          // Always stored in normalized base currency (INR)
+  rawAmount     Float          // Keeps original amount for transparency (Rohan's audit)
+  currency      String         @default("INR") // e.g., "USD", "INR"
+  exchangeRate  Float          @default(1.0)
+  date          DateTime
+  splitType     String         // "equal", "unequal", "percentage", "share"
+  isSettlement  Boolean        @default(false) // Marks settlements vs traditional expenses
+  notes         String?
+  group         Group          @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  payer         User           @relation("PaidExpenses", fields: [paidById], references: [id], onDelete: Cascade)
+  splits        ExpenseSplit[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
 model ExpenseSplit {
-  id          String  @id @default(uuid())
-  expenseId   String
-  userId      String
-  owedAmount  Float
-  expense     Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
-  user        User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  id         String   @id @default(uuid())
+  expenseId  String
+  userId     String
+  owedAmount Float    // Normalized INR value
+  expense    Expense  @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([expenseId, userId])
 }
 
 model ImportSession {
-  id             String          @id @default(uuid())
-  importedAt     DateTime        @default(now())
-  status         String
-  stagedExpenses StagedExpense[]
+  id         String          @id @default(uuid())
+  importedAt DateTime        @default(now())
+  status     String          // "PENDING", "COMPLETED", "FAILED"
+  stagedRows StagedExpense[]
 }
 
 model StagedExpense {
   id                String        @id @default(uuid())
   sessionId         String
   rawRowNumber      Int
-  rawData           String // JSON serialized original string values from the CSV
-  detectedAnomalies String // JSON serialized array of anomaly codes/descriptions
-  status            String // "PENDING_APPROVAL", "APPROVED", "REJECTED", "RESOLVED"
-  resolvedPayerId   String?
-  resolvedAmount    Float?
+  rawData           String        // Serialized JSON of original CSV text
+  detectedAnomalies String        // Serialized JSON array of anomaly strings
+  status            String        // "PENDING_APPROVAL", "APPROVED", "REJECTED", "RESOLVED"
   session           ImportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  resolvedPayer     User?         @relation(fields: [resolvedPayerId], references: [id], onDelete: SetNull)
 }

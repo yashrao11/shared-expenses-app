@@ -208,7 +208,8 @@ export async function POST(request: NextRequest) {
           groupId: mainGroup.id,
           paidById: resolvedPayer.id,
           description,
-          amount: amountVal,
+          amount: calculation.baseAmountINR,
+          rawAmount: amountVal,
           currency,
           exchangeRate,
           date: parsedDate,
@@ -235,8 +236,6 @@ export async function POST(request: NextRequest) {
         where: { id: stagedExpenseId },
         data: {
           status: finalStatus,
-          resolvedPayerId: resolvedPayer.id,
-          resolvedAmount: calculation.baseAmountINR,
         },
       });
 

@@ -12,8 +12,6 @@ interface StagedExpense {
   sessionId: string;
   rawRowNumber: number;
   status: 'PENDING_APPROVAL' | 'APPROVED' | 'RESOLVED' | 'REJECTED';
-  resolvedPayerId: string | null;
-  resolvedAmount: number | null;
   rawData: {
     date: string;
     description: string;

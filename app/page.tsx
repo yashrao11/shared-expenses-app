@@ -60,13 +60,13 @@ export default function LandingPage() {
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-slate-900 text-slate-100 font-sans selection:bg-indigo-500 selection:text-white">
+    <div className="flex flex-col min-h-screen bg-slate-50 text-slate-800 font-sans selection:bg-indigo-600 selection:text-white">
       {/* Header */}
-      <header className="border-b border-slate-800 bg-slate-950/80 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-slate-200 bg-white/80 backdrop-blur-md sticky top-0 z-50">
         <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Home className="w-6 h-6 text-indigo-500" />
-            <span className="font-semibold text-lg tracking-tight bg-gradient-to-r from-indigo-400 to-violet-400 bg-clip-text text-transparent">
+            <Home className="w-6 h-6 text-indigo-600" />
+            <span className="font-semibold text-lg tracking-tight bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">
               SplitSmart
             </span>
           </div>
@@ -74,16 +74,16 @@ export default function LandingPage() {
           <div className="flex items-center gap-4">
             <Link
               href="/import"
-              className="text-xs sm:text-sm font-medium text-slate-400 hover:text-slate-200 transition-colors"
+              className="text-xs sm:text-sm font-medium text-slate-600 hover:text-slate-900 transition-colors"
             >
               CSV Import Console
             </Link>
             {currentUser && (
-              <div className="flex items-center gap-3 bg-slate-800/80 border border-slate-700/50 rounded-full py-1 pl-3 pr-2 text-xs sm:text-sm">
-                <span className="text-indigo-300 font-medium">{currentUser.name}</span>
+              <div className="flex items-center gap-3 bg-slate-100 border border-slate-200 rounded-full py-1 pl-3 pr-2 text-xs sm:text-sm">
+                <span className="text-indigo-700 font-medium">{currentUser.name}</span>
                 <button
                   onClick={handleLogout}
-                  className="bg-slate-700 hover:bg-slate-600 px-2 py-0.5 rounded-full transition-colors text-slate-300"
+                  className="bg-slate-200 hover:bg-slate-300 px-2 py-0.5 rounded-full transition-colors text-slate-600 text-xs font-semibold"
                 >
                   Logout
                 </button>
@@ -97,38 +97,38 @@ export default function LandingPage() {
       <main className="flex-1 max-w-4xl mx-auto px-6 py-12 w-full flex flex-col justify-center gap-12">
         {/* Intro */}
         <div className="text-center space-y-4 max-w-2xl mx-auto">
-          <h1 className="text-4xl md:text-5xl font-bold tracking-tight text-white leading-tight">
+          <h1 className="text-4xl md:text-5xl font-extrabold tracking-tight text-slate-900 leading-tight">
             Shared Roommate Expenses{' '}
-            <span className="bg-gradient-to-r from-indigo-400 via-purple-400 to-pink-400 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-indigo-600 via-purple-600 to-pink-600 bg-clip-text text-transparent">
               Simplified.
             </span>
           </h1>
-          <p className="text-slate-400 text-base md:text-lg">
+          <p className="text-slate-600 text-base md:text-lg">
             Track flatmate expenses, resolve raw CSV import anomalies, and settle balances with optimized cash transfers.
           </p>
         </div>
 
         {loading ? (
           <div className="flex flex-col items-center justify-center py-20 gap-4">
-            <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-            <span className="text-slate-400 text-sm">Initializing SplitSmart portal...</span>
+            <div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
+            <span className="text-slate-500 text-sm">Initializing SplitSmart portal...</span>
           </div>
         ) : (
           <div className="space-y-12">
             {/* Roommate Simulated Login Grid */}
             <div className="space-y-6">
-              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-                <h2 className="text-xl font-semibold text-slate-200 flex items-center gap-2">
-                  <User className="w-5 h-5 text-indigo-400" />
+              <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                  <User className="w-5 h-5 text-indigo-600" />
                   1. Choose Your Roommate Profile (Simulated Auth)
                 </h2>
                 {currentUser ? (
-                  <span className="text-xs bg-emerald-500/10 text-emerald-400 px-2.5 py-1 rounded-full border border-emerald-500/20 flex items-center gap-1.5 font-medium">
+                  <span className="text-xs bg-emerald-50 text-emerald-700 px-2.5 py-1 rounded-full border border-emerald-200 flex items-center gap-1.5 font-semibold">
                     <UserCheck className="w-3.5 h-3.5" />
                     Active: {currentUser.name}
                   </span>
                 ) : (
-                  <span className="text-xs bg-amber-500/10 text-amber-400 px-2.5 py-1 rounded-full border border-amber-500/20 flex items-center gap-1.5 font-medium">
+                  <span className="text-xs bg-amber-50 text-amber-700 px-2.5 py-1 rounded-full border border-amber-200 flex items-center gap-1.5 font-semibold">
                     <ShieldAlert className="w-3.5 h-3.5" />
                     Authentication Required
                   </span>
@@ -142,21 +142,21 @@ export default function LandingPage() {
                     <button
                       key={user.id}
                       onClick={() => handleSelectUser(user)}
-                      className={`relative flex flex-col items-center justify-center p-6 rounded-2xl border text-center transition-all duration-300 transform hover:-translate-y-1 ${
+                      className={`relative flex flex-col items-center justify-center p-6 rounded-2xl border text-center transition-all duration-300 transform hover:-translate-y-1 cursor-pointer ${
                         isSelected
-                          ? 'bg-indigo-600/20 border-indigo-500 shadow-lg shadow-indigo-500/10 scale-105'
-                          : 'bg-slate-800/50 hover:bg-slate-800 border-slate-700/60 hover:border-slate-600'
+                          ? 'bg-indigo-50 border-indigo-500 shadow-md shadow-indigo-500/5 scale-105 ring-2 ring-indigo-500/20'
+                          : 'bg-white hover:bg-slate-50 border-slate-200/80 hover:border-slate-300 shadow-sm'
                       }`}
                     >
                       <div
                         className={`w-12 h-12 rounded-full flex items-center justify-center mb-3 transition-colors ${
-                          isSelected ? 'bg-indigo-500 text-white' : 'bg-slate-700 text-slate-300'
+                          isSelected ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600'
                         }`}
                       >
-                        <span className="font-semibold text-lg">{user.name[0]}</span>
+                        <span className="font-bold text-lg">{user.name[0]}</span>
                       </div>
-                      <span className="font-medium text-slate-100">{user.name}</span>
-                      <span className="text-xs text-slate-400 mt-1">
+                      <span className="font-semibold text-slate-900">{user.name}</span>
+                      <span className="text-xs text-slate-500 mt-1">
                         {user.name === 'Dev' ? 'Visiting Friend' : 'Roommate'}
                       </span>
                     </button>
@@ -167,14 +167,14 @@ export default function LandingPage() {
 
             {/* Active Groups List */}
             <div className="space-y-6">
-              <div className="border-b border-slate-800 pb-3">
-                <h2 className="text-xl font-semibold text-slate-200">
+              <div className="border-b border-slate-200 pb-3">
+                <h2 className="text-xl font-bold text-slate-800">
                   2. Select Shared Space Group
                 </h2>
               </div>
 
               {groups.length === 0 ? (
-                <div className="bg-slate-850 border border-slate-850 rounded-2xl p-8 text-center text-slate-400">
+                <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-slate-500">
                   No groups created. Ensure the seed script has initialized.
                 </div>
               ) : (
@@ -186,15 +186,15 @@ export default function LandingPage() {
                         key={group.id}
                         className={`group relative flex flex-col sm:flex-row sm:items-center justify-between p-6 rounded-2xl border transition-all duration-300 ${
                           canEnter
-                            ? 'bg-slate-850 border-slate-750 hover:border-slate-650 hover:bg-slate-800 shadow-md'
-                            : 'bg-slate-850/40 border-slate-800/80 cursor-not-allowed opacity-60'
+                            ? 'bg-white border-slate-200 hover:border-slate-300 hover:bg-white/90 shadow-sm'
+                            : 'bg-white/50 border-slate-100 cursor-not-allowed opacity-60'
                         }`}
                       >
                         <div className="space-y-1">
-                          <h3 className="font-semibold text-lg text-slate-200 group-hover:text-white transition-colors">
+                          <h3 className="font-bold text-lg text-slate-950 group-hover:text-indigo-600 transition-colors">
                             {group.name}
                           </h3>
-                          <p className="text-xs text-slate-400">
+                          <p className="text-xs text-slate-500">
                             Active since {new Date(group.createdAt).toLocaleDateString()}
                           </p>
                         </div>
@@ -202,14 +202,14 @@ export default function LandingPage() {
                         {canEnter ? (
                           <Link
                             href={`/groups/${group.id}`}
-                            className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-sm px-5 py-2.5 rounded-xl transition-all self-start sm:self-auto shadow-md shadow-indigo-600/10 mt-4 sm:mt-0"
+                            className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold text-sm px-5 py-2.5 rounded-xl transition-all self-start sm:self-auto shadow-md shadow-indigo-600/10 mt-4 sm:mt-0 cursor-pointer"
                           >
                             Enter Dashboard
                             <ArrowRight className="w-4 h-4 transition-transform group-hover:translate-x-1" />
                           </Link>
                         ) : (
-                          <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 px-4 py-2 rounded-xl mt-4 sm:mt-0 flex items-center gap-1.5 self-start sm:self-auto font-medium">
-                            <ShieldAlert className="w-4 h-4" />
+                          <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 px-4 py-2 rounded-xl mt-4 sm:mt-0 flex items-center gap-1.5 self-start sm:self-auto font-semibold">
+                            <ShieldAlert className="w-4 h-4 text-amber-600" />
                             Select Roommate Profile to Enter
                           </div>
                         )}
@@ -224,9 +224,9 @@ export default function LandingPage() {
       </main>
 
       {/* Footer */}
-      <footer className="border-t border-slate-800/50 bg-slate-950 py-8 text-center text-slate-500 text-xs mt-12">
+      <footer className="border-t border-slate-200 bg-white py-8 text-center text-slate-500 text-xs mt-12">
         <p>© 2026 SplitSmart Roommate Settlement Engine. Built for Spreetail.</p>
       </footer>
     </div>
   );
-}
+}}

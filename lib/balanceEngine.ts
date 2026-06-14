@@ -58,7 +58,7 @@ export async function calculateNetBalances(groupId: string): Promise<MemberNetBa
   });
 
   for (const expense of expenses) {
-    const baseAmount = expense.amount * expense.exchangeRate;
+    const baseAmount = expense.amount;
 
     // Add to payer's totalPaid (ensure payer is in the tracking map, otherwise initialize)
     if (memberBalances[expense.paidById]) {
@@ -197,7 +197,7 @@ export async function getUserLedger(userId: string, groupId: string): Promise<Us
 
   return expenses.map((expense) => {
     const wasPaidByMe = expense.paidById === userId;
-    const totalAmount = Math.round(expense.amount * expense.exchangeRate * 100) / 100;
+    const totalAmount = Math.round(expense.amount * 100) / 100;
     const myOwedShare = expense.splits[0] ? Math.round(expense.splits[0].owedAmount * 100) / 100 : 0;
     const paidByMe = wasPaidByMe ? totalAmount : 0;
     const myNetImpact = Math.round((paidByMe - myOwedShare) * 100) / 100;

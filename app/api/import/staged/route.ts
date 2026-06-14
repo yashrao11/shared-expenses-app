@@ -45,8 +45,8 @@ export async function GET(request: NextRequest) {
         sessionId: expense.sessionId,
         rawRowNumber: expense.rawRowNumber,
         status: expense.status,
-        resolvedPayerId: expense.resolvedPayerId,
-        resolvedAmount: expense.resolvedAmount,
+        resolvedPayerId: null,
+        resolvedAmount: null,
         rawData: rawDataObj,
         detectedAnomalies: anomaliesArr,
       };

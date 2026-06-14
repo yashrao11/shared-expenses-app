@@ -40,6 +40,7 @@ export async function POST(request: NextRequest) {
           paidById: payerId,
           description: `${payer.name} paid ${payee.name} back (Settlement)`,
           amount: amountVal,
+          rawAmount: amountVal,
           currency: 'INR',
           exchangeRate: 1.0,
           date: parsedDate,
