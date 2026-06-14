@@ -5,12 +5,28 @@ import { calculateSplits, RawSplitInput } from '@/lib/splittingEngine';
 // Date parser helper
 const parseCSVDate = (dateStr: string): Date => {
   const cleanStr = dateStr.trim();
+  // Check if it's YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(cleanStr)) {
+    const parts = cleanStr.split('-');
+    const y = parseInt(parts[0]);
+    const m = parseInt(parts[1]) - 1;
+    const d = parseInt(parts[2]);
+    return new Date(Date.UTC(y, m, d));
+  }
   const parts = cleanStr.split('-');
   if (parts.length === 3) {
-    const d = parseInt(parts[0]);
-    const m = parseInt(parts[1]) - 1;
-    const y = parseInt(parts[2]);
-    return new Date(Date.UTC(y, m, d));
+    // Check if parts[0] is year (YYYY-MM-DD) or day (DD-MM-YYYY)
+    if (parts[0].length === 4) {
+      const y = parseInt(parts[0]);
+      const m = parseInt(parts[1]) - 1;
+      const d = parseInt(parts[2]);
+      return new Date(Date.UTC(y, m, d));
+    } else {
+      const d = parseInt(parts[0]);
+      const m = parseInt(parts[1]) - 1;
+      const y = parseInt(parts[2]);
+      return new Date(Date.UTC(y, m, d));
+    }
   }
   if (parts.length === 2) {
     const months: Record<string, number> = {
@@ -23,7 +39,11 @@ const parseCSVDate = (dateStr: string): Date => {
       return new Date(Date.UTC(2026, months[monthPart], dayPart));
     }
   }
-  return new Date(cleanStr);
+  const d = new Date(cleanStr);
+  if (isNaN(d.getTime())) {
+    throw new Error(`Invalid date format: "${dateStr}"`);
+  }
+  return d;
 };
 
 export async function POST(request: NextRequest) {
@@ -118,7 +138,7 @@ export async function POST(request: NextRequest) {
 
     let parsedDate = new Date();
     try {
-      parsedDate = dateStr ? new Date(dateStr) : parseCSVDate(dateStr);
+      parsedDate = parseCSVDate(dateStr);
     } catch (err) {
       return NextResponse.json(
         { success: false, error: `Invalid date format: "${dateStr}".` },
