@@ -8,6 +8,7 @@
 export interface RawSplitInput {
   amount: number;
   currency: string;
+  exchangeRate?: number;
   date: Date;
   splitType: string;
   splitWith: string[]; // display names (e.g. "Aisha", "Rohan")
@@ -46,10 +47,10 @@ export async function calculateSplits(
   membershipTimelines?: Record<string, { joinedAt: Date; leftAt: Date | null }[]>
 ): Promise<SplitCalculationOutput> {
   const errors: string[] = [];
-  const { amount, currency, date, splitType, splitWith, splitDetails } = input;
+  const { amount, currency, exchangeRate, date, splitType, splitWith, splitDetails } = input;
 
   // ── 1. Currency conversion ────────────────────────────────────────────────
-  const rate = (currency || "INR").trim().toUpperCase() === "USD" ? USD_TO_INR : 1.0;
+  const rate = (currency || "INR").trim().toUpperCase() === "USD" ? (exchangeRate || USD_TO_INR) : 1.0;
   const baseAmountINR = Math.round(amount * rate * 100) / 100;
 
   // ── 2. Resolve names → user IDs ──────────────────────────────────────────
@@ -122,12 +123,11 @@ export async function calculateSplits(
   if (!splitType || splitType === "equal") {
     // Equal: distribute cents-first then give remainder pennies to first person
     const totalCents = Math.round(baseAmountINR * 100);
-    const shareCents = Math.floor(totalCents / n);
-    const remainderCents = totalCents % n;
+    const amounts = distributeCents(totalCents, n);
     for (let i = 0; i < n; i++) {
       splits.push({
         ...resolvedParticipants[i],
-        owedAmount: (shareCents + (i === 0 ? remainderCents : 0)) / 100,
+        owedAmount: amounts[i] / 100,
       });
     }
   } else if (splitType === "unequal") {
@@ -302,15 +302,22 @@ export async function calculateSplits(
   } else {
     // Unknown split type — fall back to equal
     const totalCents = Math.round(baseAmountINR * 100);
-    const shareCents = Math.floor(totalCents / n);
-    const remainderCents = totalCents % n;
+    const amounts = distributeCents(totalCents, n);
     for (let i = 0; i < n; i++) {
       splits.push({
         ...resolvedParticipants[i],
-        owedAmount: (shareCents + (i === 0 ? remainderCents : 0)) / 100,
+        owedAmount: amounts[i] / 100,
       });
     }
   }
 
   return { success: true, errors: [], baseAmountINR, splits };
+}
+
+function distributeCents(totalCents: number, count: number): number[] {
+  const sign = totalCents < 0 ? -1 : 1;
+  const absolute = Math.abs(totalCents);
+  const share = Math.floor(absolute / count);
+  const remainder = absolute % count;
+  return Array.from({ length: count }, (_, index) => sign * (share + (index < remainder ? 1 : 0)));
 }

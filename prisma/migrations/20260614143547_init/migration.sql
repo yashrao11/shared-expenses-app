@@ -69,6 +69,10 @@ CREATE TABLE "StagedExpense" (
     "status" TEXT NOT NULL,
     "resolvedPayerId" TEXT,
     "resolvedAmount" REAL,
+    "resolvedData" TEXT,
+    "resolutionSummary" TEXT,
+    "resolutionMode" TEXT,
+    "committedExpenseId" TEXT,
     CONSTRAINT "StagedExpense_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "ImportSession" ("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "StagedExpense_resolvedPayerId_fkey" FOREIGN KEY ("resolvedPayerId") REFERENCES "User" ("id") ON DELETE SET NULL ON UPDATE CASCADE
 );
