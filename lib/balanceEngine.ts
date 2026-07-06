@@ -57,7 +57,18 @@ export async function calculateNetBalances(groupId: string): Promise<MemberNetBa
     include: { splits: true },
   });
 
-  for (const expense of expenses) {
+  const uniqueExpenses: typeof expenses = [];
+  const seenKeys = new Set<string>();
+
+  for (const exp of expenses) {
+    const key = `${exp.description}-${exp.amount}-${new Date(exp.date).getTime()}-${exp.paidById}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueExpenses.push(exp);
+    }
+  }
+
+  for (const expense of uniqueExpenses) {
     const baseAmount = expense.amount;
 
     // Add to payer's totalPaid (ensure payer is in the tracking map, otherwise initialize)
@@ -176,7 +187,7 @@ export function simplifyDebts(balances: MemberNetBalance[]): SimplifiedDebt[] {
  * @param groupId The unique group ID
  * @returns Promise<UserLedgerItem[]>
  */
-export async function getUserLedger(userId: string, groupId: string): Promise<UserLedgerItem[]> {
+export async function getUserLedger(userId: string, groupId: string): Promise<any[]> {
   const expenses = await prisma.expense.findMany({
     where: {
       groupId,
@@ -186,8 +197,11 @@ export async function getUserLedger(userId: string, groupId: string): Promise<Us
       ],
     },
     include: {
+      payer: true,
       splits: {
-        where: { userId },
+        include: {
+          user: true,
+        },
       },
     },
     orderBy: {
@@ -195,10 +209,26 @@ export async function getUserLedger(userId: string, groupId: string): Promise<Us
     },
   });
 
-  return expenses.map((expense) => {
+  // Deduplicate identical expense records committed in the DB
+  const uniqueExpenses: typeof expenses = [];
+  const seenKeys = new Set<string>();
+
+  for (const exp of expenses) {
+    const key = `${exp.description}-${exp.amount}-${new Date(exp.date).getTime()}-${exp.paidById}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueExpenses.push(exp);
+    }
+  }
+
+  return uniqueExpenses.map((expense) => {
     const wasPaidByMe = expense.paidById === userId;
     const totalAmount = Math.round(expense.amount * 100) / 100;
-    const myOwedShare = expense.splits[0] ? Math.round(expense.splits[0].owedAmount * 100) / 100 : 0;
+
+    // Find my split share
+    const mySplit = expense.splits.find((s) => s.userId === userId);
+    const myOwedShare = mySplit ? Math.round(mySplit.owedAmount * 100) / 100 : 0;
+
     const paidByMe = wasPaidByMe ? totalAmount : 0;
     const myNetImpact = Math.round((paidByMe - myOwedShare) * 100) / 100;
 
@@ -208,8 +238,162 @@ export async function getUserLedger(userId: string, groupId: string): Promise<Us
       date: expense.date,
       wasPaidByMe,
       totalAmount,
+      rawAmount: expense.rawAmount,
+      currency: expense.currency,
+      exchangeRate: expense.exchangeRate,
+      splitType: expense.splitType,
+      isSettlement: expense.isSettlement,
+      notes: expense.notes,
+      paidByUserName: expense.payer.name,
       myOwedShare,
       myNetImpact,
+      allSplits: expense.splits.map((s) => ({
+        userName: s.user.name,
+        owedAmount: Math.round(s.owedAmount * 100) / 100,
+      })),
     };
   });
 }
+
+export async function getGroupLedger(groupId: string): Promise<any[]> {
+  const expenses = await prisma.expense.findMany({
+    where: { groupId },
+    include: {
+      payer: true,
+      splits: {
+        include: {
+          user: true,
+        },
+      },
+    },
+    orderBy: {
+      date: 'desc',
+    },
+  });
+
+  const uniqueExpenses: typeof expenses = [];
+  const seenKeys = new Set<string>();
+
+  for (const exp of expenses) {
+    const key = `${exp.description}-${exp.amount}-${new Date(exp.date).getTime()}-${exp.paidById}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueExpenses.push(exp);
+    }
+  }
+
+  return uniqueExpenses.map((expense) => {
+    const totalAmount = Math.round(expense.amount * 100) / 100;
+    return {
+      expenseId: expense.id,
+      description: expense.description,
+      date: expense.date,
+      paidById: expense.paidById,
+      paidByUserName: expense.payer.name,
+      totalAmount,
+      isSettlement: expense.isSettlement,
+      allSplits: expense.splits.map((s) => ({
+        userId: s.userId,
+        userName: s.user.name,
+        owedAmount: Math.round(s.owedAmount * 100) / 100,
+      })),
+    };
+  });
+}
+
+export async function calculateDirectDebts(groupId: string): Promise<SimplifiedDebt[]> {
+  const expenses = await prisma.expense.findMany({
+    where: { groupId },
+    include: {
+      payer: true,
+      splits: {
+        include: {
+          user: true,
+        },
+      },
+    },
+  });
+
+  const users = await prisma.user.findMany({
+    where: {
+      memberships: {
+        some: { groupId }
+      }
+    }
+  });
+
+  const matrix: Record<string, Record<string, number>> = {};
+  for (const u of users) {
+    matrix[u.id] = {};
+    for (const other of users) {
+      matrix[u.id][other.id] = 0;
+    }
+  }
+
+  const uniqueExpenses: typeof expenses = [];
+  const seenKeys = new Set<string>();
+
+  for (const exp of expenses) {
+    const key = `${exp.description}-${exp.amount}-${new Date(exp.date).getTime()}-${exp.paidById}`;
+    if (!seenKeys.has(key)) {
+      seenKeys.add(key);
+      uniqueExpenses.push(exp);
+    }
+  }
+
+  for (const exp of uniqueExpenses) {
+    const payerId = exp.paidById;
+    if (!matrix[payerId]) continue;
+
+    for (const split of exp.splits) {
+      const debtorId = split.userId;
+      if (debtorId === payerId) continue;
+      if (!matrix[debtorId]) continue;
+
+      matrix[debtorId][payerId] += split.owedAmount;
+    }
+  }
+
+  const results: SimplifiedDebt[] = [];
+  const visited = new Set<string>();
+
+  for (const u1 of users) {
+    for (const u2 of users) {
+      if (u1.id === u2.id) continue;
+      const pairKey = [u1.id, u2.id].sort().join('-');
+      if (visited.has(pairKey)) continue;
+      visited.add(pairKey);
+
+      const u1OwesU2 = matrix[u1.id][u2.id];
+      const u2OwesU1 = matrix[u2.id][u1.id];
+
+      if (u1OwesU2 > u2OwesU1) {
+        const net = u1OwesU2 - u2OwesU1;
+        if (net > 0.009) {
+          results.push({
+            fromUserId: u1.id,
+            fromUserName: u1.name,
+            toUserId: u2.id,
+            toUserName: u2.name,
+            amount: Math.round(net * 100) / 100,
+          });
+        }
+      } else if (u2OwesU1 > u1OwesU2) {
+        const net = u2OwesU1 - u1OwesU2;
+        if (net > 0.009) {
+          results.push({
+            fromUserId: u2.id,
+            fromUserName: u2.name,
+            toUserId: u1.id,
+            toUserName: u1.name,
+            amount: Math.round(net * 100) / 100,
+          });
+        }
+      }
+    }
+  }
+
+  return results;
+}
+
+

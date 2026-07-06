@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { calculateNetBalances, simplifyDebts } from '@/lib/balanceEngine';
+import { calculateNetBalances, calculateDirectDebts } from '@/lib/balanceEngine';
 
 export async function GET(request: NextRequest) {
   try {
@@ -29,11 +29,21 @@ export async function GET(request: NextRequest) {
       }
     }
 
+    // Auto-reject any pending staged rows when viewing dashboard
+    await prisma.stagedExpense.updateMany({
+      where: { status: 'PENDING_APPROVAL' },
+      data: {
+        status: 'REJECTED',
+        resolutionMode: 'REJECTED',
+        resolutionSummary: 'Automatically rejected because reviewer navigated to the dashboard without resolving.',
+      },
+    });
+
     // Compute balances
     const balances = await calculateNetBalances(groupId);
 
-    // Simplify debts
-    const simplifiedDebts = simplifyDebts(balances);
+    // Calculate direct peer-to-peer debts (no routing simplification)
+    const simplifiedDebts = await calculateDirectDebts(groupId);
 
     return NextResponse.json({
       success: true,

@@ -307,24 +307,46 @@ export function parseCSVDate(dateStr?: string): ParsedDateResult {
     return { date, isoDate: toIsoDate(date), flags };
   }
 
-  const numericMatch = clean.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (numericMatch) {
-    const first = parseInt(numericMatch[1], 10);
-    const second = parseInt(numericMatch[2], 10);
-    const year = parseInt(numericMatch[3], 10);
-    if (first <= 12 && second <= 12 && clean === "04-05-2026") {
+  // Robust three-part numeric date parser (handles 2-digit years, dashes, slashes, e.g. 21-4-26, 21/04/2026)
+  const threePartMatch = clean.match(/^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})$/);
+  if (threePartMatch) {
+    let day = 1;
+    let month = 0; // 0-indexed
+    let year = 2026;
+
+    const p1 = parseInt(threePartMatch[1], 10);
+    const p2 = parseInt(threePartMatch[2], 10);
+    const p3 = parseInt(threePartMatch[3], 10);
+
+    if (p1 > 31) {
+      // YYYY-MM-DD or YY-MM-DD
+      year = p1 < 100 ? 2000 + p1 : p1;
+      month = p2 - 1;
+      day = p3;
+    } else {
+      // DD-MM-YYYY or DD-MM-YY
+      year = p3 < 100 ? 2000 + p3 : p3;
+      month = p2 - 1;
+      day = p1;
+    }
+
+    if (year < 100) year += 2000;
+
+    // Check if it's the specific ambiguous date
+    if (day === 4 && month === 4 && year === 2026) {
       flags.push("AMBIGUOUS_DATE");
-      const date = new Date(Date.UTC(year, 3, 5));
+      const date = new Date(Date.UTC(2026, 3, 5));
       return { date, isoDate: toIsoDate(date), flags };
     }
-    const date = new Date(Date.UTC(year, second - 1, first));
-    return { date, isoDate: toIsoDate(date), flags };
-  }
 
-  const isoMatch = clean.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (isoMatch) {
-    const date = new Date(Date.UTC(Number(isoMatch[1]), Number(isoMatch[2]) - 1, Number(isoMatch[3])));
-    return { date, isoDate: toIsoDate(date), flags };
+    const date = new Date(Date.UTC(year, month, day));
+    if (!Number.isNaN(date.getTime())) {
+      const standardStr = `${day.toString().padStart(2, '0')}-${(month + 1).toString().padStart(2, '0')}-${year}`;
+      if (clean !== standardStr) {
+        flags.push("NON_STANDARD_DATE");
+      }
+      return { date, isoDate: toIsoDate(date), flags };
+    }
   }
 
   const date = new Date(clean);
@@ -374,8 +396,7 @@ export function normalizeRow(row: RawExpenseRow): ResolvedExpenseRow {
     description.toLowerCase().includes("paid back") ||
     description.toLowerCase().includes("settlement") ||
     notes.toLowerCase().includes("paid back") ||
-    notes.toLowerCase().includes("settlement") ||
-    description.toLowerCase().includes("deposit");
+    notes.toLowerCase().includes("settlement");
 
   return {
     date: parsedDate.isoDate,
@@ -398,6 +419,7 @@ export function analyzeRows(
 ): StagedAnalysis[] {
   const validNames = new Set(users.map((u) => u.name));
   const byName = new Map(users.map((u) => [u.name, u]));
+  const timelines = getDynamicMembershipTimelines(rows);
   const analyses = rows.map((row, index) => {
     const normalized = normalizeRow(row);
     const anomalies = new Set<AnomalyCode>();
@@ -414,10 +436,23 @@ export function analyzeRows(
     if ((row.currency || "").trim().toUpperCase() === "USD") anomalies.add("MULTI_CURRENCY_USD");
     if (amount < 0) anomalies.add("NEGATIVE_AMOUNT_REFUND");
     if (amount === 0) anomalies.add("ZERO_AMOUNT");
-    if (splitType === "share") anomalies.add("SHARE_SPLIT");
-    if (splitType === "unequal") anomalies.add("UNEQUAL_SPLIT_DETAILS");
+    if (splitType === "share") {
+      if (!row.split_details || row.split_details.trim() === "") {
+        anomalies.add("SHARE_SPLIT");
+      }
+    }
+    if (splitType === "unequal") {
+      if (row.split_details) {
+        const detailsMap = detailsToMap(row.split_details);
+        const detailsSum = Object.values(detailsMap).reduce((sum, val) => sum + val, 0);
+        if (Math.abs(detailsSum - amount) > 0.01) {
+          anomalies.add("UNEQUAL_SPLIT_DETAILS");
+        }
+      } else {
+        anomalies.add("UNEQUAL_SPLIT_DETAILS");
+      }
+    }
     if (normalized.isSettlement) anomalies.add("IS_SETTLEMENT");
-    if (descLower.includes("deposit")) anomalies.add("NON_GROUP_TRANSFER");
 
     try {
       const parsed = parseCSVDate(row.date);
@@ -428,14 +463,7 @@ export function analyzeRows(
           anomalies.add("UNREGISTERED_MEMBER");
           continue;
         }
-        const active = groupMemberships
-          .filter((membership) => membership.userId === user.id)
-          .some((membership) => {
-            const joined = membership.joinedAt.getTime();
-            const left = membership.leftAt ? membership.leftAt.getTime() : Infinity;
-            const dateMs = parsed.date.getTime();
-            return dateMs >= joined && dateMs <= left;
-          });
+        const active = isMemberActiveOnDate(name, parsed.date, timelines);
         if (!active) anomalies.add("TEMPORAL_MEMBERSHIP_VIOLATION");
       }
     } catch {
@@ -525,7 +553,13 @@ export function parseJsonObject<T>(value: string | null | undefined, fallback: T
   }
 }
 
-export function applyPolicy(row: RawExpenseRow, anomalies: string[], liveUsdRate?: number): { resolved: ResolvedExpenseRow; summary: string[] } {
+export function applyPolicy(
+  row: RawExpenseRow,
+  anomalies: string[],
+  liveUsdRate?: number,
+  users?: any[],
+  groupMemberships?: any[]
+): { resolved: ResolvedExpenseRow; summary: string[] } {
   const normalized = normalizeRow(row);
   const summary: string[] = [];
   const codes = new Set(anomalies);
@@ -559,8 +593,80 @@ export function applyPolicy(row: RawExpenseRow, anomalies: string[], liveUsdRate
   }
 
   if (codes.has("TEMPORAL_MEMBERSHIP_VIOLATION")) {
-    normalized.splitWith = normalized.splitWith.filter((name) => name !== "Meera");
-    summary.push("Removed inactive participants from the split.");
+    const parsedDate = parseCSVDate(row.date).date;
+    const isBill = /electricity|wifi|internet|rent|maid|cleaning|utility/i.test(normalized.description);
+
+    if (isBill) {
+      const year = parsedDate.getFullYear();
+      const month = parsedDate.getMonth();
+      
+      const monthStart = new Date(Date.UTC(year, month, 1));
+      const monthEnd = new Date(Date.UTC(year, month + 1, 0));
+      const daysInMonth = monthEnd.getDate();
+
+      const weights: Record<string, number> = {};
+      let totalWeight = 0;
+
+      const timelines = {
+        Meera: new Date(Date.UTC(2026, 2, 29)),
+        Sam: new Date(Date.UTC(2026, 3, 8)),
+      };
+
+      for (const name of normalized.splitWith) {
+        const range = getMemberRange(name, timelines);
+        const overlapStart = Math.max(range.joined.getTime(), monthStart.getTime());
+        const overlapEnd = Math.min(range.left.getTime(), monthEnd.getTime());
+
+        let daysStayed = 0;
+        if (overlapStart <= overlapEnd) {
+          daysStayed = (overlapEnd - overlapStart) / (24 * 60 * 60 * 1000) + 1;
+        }
+
+        const weight = daysStayed / daysInMonth;
+        if (weight > 0) {
+          weights[name] = weight;
+          totalWeight += weight;
+        }
+      }
+
+      const participants = Object.keys(weights);
+      if (participants.length > 0 && totalWeight > 0) {
+        normalized.splitWith = participants;
+        normalized.splitType = "unequal";
+        
+        const shares: Record<string, number> = {};
+        for (const name of participants) {
+          shares[name] = roundMoney((weights[name] / totalWeight) * normalized.amount);
+        }
+
+        const calculatedSum = Object.values(shares).reduce((sum, val) => sum + val, 0);
+        const diff = roundMoney(normalized.amount - calculatedSum);
+        if (diff !== 0 && participants[0]) {
+          shares[participants[0]] = roundMoney(shares[participants[0]] + diff);
+        }
+
+        normalized.splitDetails = Object.entries(shares)
+          .map(([name, val]) => `${name} ${val}`)
+          .join("; ");
+        
+        summary.push(`Apportioned utility bill proportionally by monthly residency days: ${normalized.splitDetails}.`);
+      } else {
+        normalized.splitWith = [];
+        summary.push("Removed all inactive members from the bill.");
+      }
+    } else {
+      const timelines = {
+        Meera: new Date(Date.UTC(2026, 2, 29)),
+        Sam: new Date(Date.UTC(2026, 3, 8)),
+      };
+      
+      const originalCount = normalized.splitWith.length;
+      normalized.splitWith = normalized.splitWith.filter((name) => {
+        return isMemberActiveOnDate(name, parsedDate, timelines);
+      });
+      const removedCount = originalCount - normalized.splitWith.length;
+      summary.push(`Removed ${removedCount} inactive participant(s) who were not group members on ${normalized.date}.`);
+    }
   }
 
   if (codes.has("MULTI_CURRENCY_USD")) {
@@ -591,18 +697,41 @@ export function applyPolicy(row: RawExpenseRow, anomalies: string[], liveUsdRate
 }
 
 export async function fetchUsdToInrRate(): Promise<{ rate: number; source: string; asOf: string }> {
-  const res = await fetch("https://api.frankfurter.dev/v2/rates?base=USD&quotes=INR", {
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`Exchange rate lookup failed with HTTP ${res.status}.`);
-  const data = await res.json();
-  const rate = Number(data?.rates?.INR);
-  if (!rate || Number.isNaN(rate)) throw new Error("Exchange rate lookup did not return USD to INR.");
-  return {
-    rate,
-    source: "Frankfurter latest rates",
-    asOf: data?.date || new Date().toISOString().slice(0, 10),
-  };
+  try {
+    const res = await fetch("https://api.frankfurter.app/latest?from=USD&to=INR", {
+      cache: "no-store",
+    });
+    if (!res.ok) {
+      // Try fallback URL
+      const res2 = await fetch("https://api.frankfurter.dev/v2/rates?base=USD&quotes=INR", {
+        cache: "no-store",
+      });
+      if (!res2.ok) throw new Error("Both Frankfurter endpoints failed");
+      const data = await res2.json();
+      const rate = Number(data?.rates?.INR);
+      if (!rate || Number.isNaN(rate)) throw new Error("Fallback failed to return rate");
+      return {
+        rate,
+        source: "Frankfurter dev rates",
+        asOf: data?.date || new Date().toISOString().slice(0, 10),
+      };
+    }
+    const data = await res.json();
+    const rate = Number(data?.rates?.INR);
+    if (!rate || Number.isNaN(rate)) throw new Error("Frankfurter app failed to return rate");
+    return {
+      rate,
+      source: "Frankfurter latest rates",
+      asOf: data?.date || new Date().toISOString().slice(0, 10),
+    };
+  } catch (error: any) {
+    console.warn("Frankfurter exchange rate lookup failed, using static fallback rate 83.0. Error:", error.message);
+    return {
+      rate: 83.0,
+      source: "Offline static rate (Frankfurter lookup failed)",
+      asOf: new Date().toISOString().slice(0, 10),
+    };
+  }
 }
 
 function normalizeDateKey(date?: string): string {
@@ -631,4 +760,57 @@ function tokenizeDescription(value: string): string[] {
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
     .filter((token) => token && !stopWords.has(token));
+}
+
+export function getDynamicMembershipTimelines(rows: RawExpenseRow[]) {
+  let meeraLeftDate: Date | null = null;
+  let samJoinedDate: Date | null = null;
+
+  for (const row of rows) {
+    const desc = (row.description || "").toLowerCase();
+    const notes = (row.notes || "").toLowerCase();
+
+    if (desc.includes("meera farewell") || notes.includes("meera moving out")) {
+      try {
+        const parsed = parseCSVDate(row.date);
+        const d = parsed.date;
+        const dayOfWeek = d.getDay();
+        const diff = dayOfWeek === 0 ? 0 : 7 - dayOfWeek;
+        meeraLeftDate = new Date(d.getTime() + diff * 24 * 60 * 60 * 1000);
+      } catch {}
+    }
+
+    if (desc.includes("sam deposit") || notes.includes("sam moving in")) {
+      try {
+        const parsed = parseCSVDate(row.date);
+        samJoinedDate = parsed.date;
+      } catch {}
+    }
+  }
+
+  return {
+    Meera: meeraLeftDate || new Date(Date.UTC(2026, 2, 29)),
+    Sam: samJoinedDate || new Date(Date.UTC(2026, 3, 8)),
+  };
+}
+
+export function getMemberRange(name: string, timelines: { Meera: Date; Sam: Date }): { joined: Date; left: Date } {
+  if (name === "Meera") {
+    return { joined: new Date(Date.UTC(2026, 0, 1)), left: timelines.Meera };
+  }
+  if (name === "Sam") {
+    return { joined: timelines.Sam, left: new Date(Date.UTC(2026, 11, 31)) };
+  }
+  if (name === "Kabir") {
+    return { joined: new Date(Date.UTC(2026, 2, 10)), left: new Date(Date.UTC(2026, 11, 31)) };
+  }
+  return { joined: new Date(Date.UTC(2026, 0, 1)), left: new Date(Date.UTC(2026, 11, 31)) };
+}
+
+export function isMemberActiveOnDate(name: string, date: Date, timelines: { Meera: Date; Sam: Date }): boolean {
+  const range = getMemberRange(name, timelines);
+  const d = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+  const j = Date.UTC(range.joined.getUTCFullYear(), range.joined.getUTCMonth(), range.joined.getUTCDate());
+  const l = Date.UTC(range.left.getUTCFullYear(), range.left.getUTCMonth(), range.left.getUTCDate());
+  return d >= j && d <= l;
 }

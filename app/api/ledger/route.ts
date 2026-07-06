@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import prisma from '@/lib/db';
-import { getUserLedger } from '@/lib/balanceEngine';
+import { getUserLedger, getGroupLedger } from '@/lib/balanceEngine';
 
 export async function GET(request: NextRequest) {
   try {
@@ -15,15 +15,17 @@ export async function GET(request: NextRequest) {
       );
     }
 
-    // Validate user exists
-    const userExists = await prisma.user.findUnique({
-      where: { id: userId },
-    });
-    if (!userExists) {
-      return NextResponse.json(
-        { success: false, error: `User with ID "${userId}" was not found.` },
-        { status: 404 }
-      );
+    if (userId !== 'all') {
+      // Validate user exists
+      const userExists = await prisma.user.findUnique({
+        where: { id: userId },
+      });
+      if (!userExists) {
+        return NextResponse.json(
+          { success: false, error: `User with ID "${userId}" was not found.` },
+          { status: 404 }
+        );
+      }
     }
 
     if (!groupId) {
@@ -48,8 +50,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Fetch user ledger
-    const ledger = await getUserLedger(userId, groupId);
+    // Fetch user or group ledger
+    const ledger = userId === 'all'
+      ? await getGroupLedger(groupId)
+      : await getUserLedger(userId, groupId);
 
     return NextResponse.json({
       success: true,

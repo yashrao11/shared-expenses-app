@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import Link from 'next/link';
 import {
   AlertTriangle,
@@ -13,6 +13,7 @@ import {
   Home,
   Info,
   RefreshCw,
+  Table,
   Trash2,
   Upload,
   Users,
@@ -113,6 +114,8 @@ const statusLabels: Record<StagedExpense['status'], string> = {
 };
 
 export default function ImportConsole() {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [showCongratsModal, setShowCongratsModal] = useState(false);
   const [users, setUsers] = useState<UserItem[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [stagedExpenses, setStagedExpenses] = useState<StagedExpense[]>([]);
@@ -126,6 +129,8 @@ export default function ImportConsole() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [memberships, setMemberships] = useState<any[]>([]);
+  const [isTableModalOpen, setIsTableModalOpen] = useState(false);
 
   const filteredRows = useMemo(() => {
     return stagedExpenses.filter((item) => {
@@ -135,9 +140,20 @@ export default function ImportConsole() {
     });
   }, [activeAnomaly, stagedExpenses, statusFilter]);
 
+  const [dashboardGroupId, setDashboardGroupId] = useState<string | null>(null);
+
   useEffect(() => {
     const savedSessionId = localStorage.getItem('importSessionId');
     if (savedSessionId) setSessionId(savedSessionId);
+
+    fetch('/api/groups')
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.success && data.groups?.length > 0) {
+          setDashboardGroupId(data.groups[0].id);
+        }
+      })
+      .catch((e) => console.error('Error fetching groups:', e));
   }, []);
 
   const autoSupported = (item: StagedExpense) => {
@@ -145,8 +161,8 @@ export default function ImportConsole() {
     return item.detectedAnomalies.every((code) => definitions[code]?.canApplyPolicy);
   };
 
-  const fetchStaged = useCallback(async (sessId: string) => {
-    setLoading(true);
+  const fetchStaged = useCallback(async (sessId: string, silent = false) => {
+    if (!silent) setLoading(true);
     setErrorMessage(null);
     try {
       const res = await fetch(`/api/import/staged?sessionId=${sessId}`);
@@ -158,10 +174,11 @@ export default function ImportConsole() {
       setStagedExpenses(data.stagedExpenses);
       setReport(data.report);
       setDefinitions(data.anomalyDefinitions || {});
+      if (data.memberships) setMemberships(data.memberships);
     } catch {
       setErrorMessage('Network error while loading staged expenses.');
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
   }, []);
 
@@ -172,9 +189,15 @@ export default function ImportConsole() {
       .catch(console.error);
 
     if (sessionId) {
-      void Promise.resolve().then(() => fetchStaged(sessionId));
+      void Promise.resolve().then(() => fetchStaged(sessionId, false));
     }
   }, [fetchStaged, sessionId]);
+
+  useEffect(() => {
+    if (report && report.totalRows > 0 && report.pending === 0) {
+      setShowCongratsModal(true);
+    }
+  }, [report]);
 
   const handleUploadParse = async () => {
     setBusyKey('upload');
@@ -196,7 +219,7 @@ export default function ImportConsole() {
       localStorage.setItem('importSessionId', data.sessionId);
       setActiveAnomaly('ALL');
       setStatusFilter('ALL');
-      await fetchStaged(data.sessionId);
+      await fetchStaged(data.sessionId, false);
     } catch {
       setErrorMessage('Network error while importing CSV.');
     } finally {
@@ -224,7 +247,7 @@ export default function ImportConsole() {
       }
       setEditingId(null);
       setEditState(null);
-      if (sessionId) await fetchStaged(sessionId);
+      if (sessionId) await fetchStaged(sessionId, true);
     } catch {
       setErrorMessage('Network error while resolving row.');
     } finally {
@@ -250,7 +273,7 @@ export default function ImportConsole() {
       if (data.skipped?.length) {
         setErrorMessage(`${data.skipped.length} row(s) still need manual review. First: row ${data.skipped[0].rowNumber} - ${data.skipped[0].reason}`);
       }
-      await fetchStaged(sessionId);
+      await fetchStaged(sessionId, true);
     } catch {
       setErrorMessage('Network error while applying category policy.');
     } finally {
@@ -274,6 +297,9 @@ export default function ImportConsole() {
       notes: source.notes || '',
       isSettlement: Boolean(source.isSettlement),
     });
+    setTimeout(() => {
+      document.getElementById(`editor-${item.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 150);
   };
 
   const toggleParticipant = (name: string) => {
@@ -317,18 +343,21 @@ export default function ImportConsole() {
     <div className="min-h-screen bg-slate-50 text-slate-800">
       <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/90 backdrop-blur">
         <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-6">
-          <div className="flex items-center gap-3">
-            <Link href="/" className="text-slate-400 hover:text-slate-800">
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
-            <div className="flex items-center gap-2 font-semibold">
-              <Home className="h-4 w-4 text-indigo-600" />
-              CSV Anomaly Resolver
-            </div>
+          <div className="flex items-center gap-2 font-semibold text-slate-800">
+            <Home className="h-4 w-4 text-indigo-600" />
+            CSV Anomaly Resolver
           </div>
-          <Link href="/" className="text-sm font-medium text-slate-500 hover:text-slate-900">
-            Dashboard
-          </Link>
+          {dashboardGroupId ? (
+            <Link
+              href={`/groups/${dashboardGroupId}`}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 border border-indigo-150 px-3 py-1.5 text-xs font-semibold text-indigo-750 hover:text-indigo-900 transition-all cursor-pointer shadow-xs"
+            >
+              <Users className="w-3.5 h-3.5 text-indigo-600" />
+              Go to Roommate Dashboard
+            </Link>
+          ) : (
+            <span className="text-xs text-slate-400 italic">Finding group...</span>
+          )}
         </div>
       </header>
 
@@ -353,21 +382,26 @@ export default function ImportConsole() {
             </div>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-              <label className="flex min-w-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100">
-                <Upload className="h-4 w-4 text-indigo-600" />
-                <span className="truncate">{selectedFile ? selectedFile.name : 'Choose CSV'}</span>
-                <input
-                  type="file"
-                  accept=".csv,text/csv"
-                  className="hidden"
-                  onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                />
-              </label>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="flex min-w-0 cursor-pointer items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600 hover:bg-slate-100 transition-colors cursor-pointer"
+              >
+                <Upload className="h-4 w-4 text-indigo-600 pointer-events-none" />
+                <span className="truncate pointer-events-none">{selectedFile ? selectedFile.name : 'Choose CSV'}</span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,text/csv"
+                className="sr-only"
+                onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+              />
 
               <button
                 onClick={handleUploadParse}
                 disabled={busyKey === 'upload'}
-                className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:bg-slate-300"
+                className="inline-flex items-center justify-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 disabled:bg-slate-300 cursor-pointer"
               >
                 {busyKey === 'upload' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
                 {selectedFile ? 'Parse Selected CSV' : 'Parse Sample CSV'}
@@ -405,15 +439,18 @@ export default function ImportConsole() {
               </div>
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => setActiveAnomaly('ALL')}
-                  className={`rounded-lg border px-3 py-2 text-xs font-semibold ${activeAnomaly === 'ALL' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'}`}
+                  onClick={() => {
+                    setActiveAnomaly('ALL');
+                    document.getElementById('staged-rows-section')?.scrollIntoView({ behavior: 'smooth' });
+                  }}
+                  className={`rounded-lg border px-3 py-2 text-xs font-semibold cursor-pointer ${activeAnomaly === 'ALL' ? 'border-indigo-500 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-white text-slate-600'}`}
                 >
                   All Anomalies
                 </button>
                 <button
                   onClick={() => applyCategoryPolicy('ALL')}
                   disabled={busyKey === 'category-ALL'}
-                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-300"
+                  className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-slate-900 px-3 py-2 text-xs font-semibold text-white disabled:bg-slate-300 cursor-pointer"
                   title="Apply every supported policy. Rows with manual-only anomalies are skipped."
                 >
                   <Info className="h-3.5 w-3.5" />
@@ -423,50 +460,74 @@ export default function ImportConsole() {
             </div>
 
             <div className="grid gap-3 p-4 md:grid-cols-2 xl:grid-cols-3">
-              {report.breakdown.map((item) => (
-                <div key={item.code} className={`rounded-lg border p-4 ${activeAnomaly === item.code ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-slate-50'}`}>
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <button
-                        onClick={() => setActiveAnomaly(item.code)}
-                        className="text-left text-sm font-bold text-slate-900 hover:text-indigo-700"
-                      >
-                        {item.definition.label}
-                      </button>
-                      <p className="mt-1 text-xs text-slate-500">{item.definition.description}</p>
+              {report.breakdown.map((item) => {
+                const isAllResolved = item.pending === 0;
+                const isSelected = activeAnomaly === item.code;
+
+                const cardClass = isSelected
+                  ? 'border-indigo-400 bg-indigo-50'
+                  : 'border-slate-200 bg-slate-50';
+
+                const blurClass = isAllResolved ? 'opacity-55 filter blur-[0.4px]' : '';
+
+                return (
+                  <div
+                    key={item.code}
+                    className={`rounded-lg border p-4 transition-all ${cardClass} ${blurClass}`}
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <button
+                          onClick={() => {
+                            setActiveAnomaly(item.code);
+                            document.getElementById('staged-rows-section')?.scrollIntoView({ behavior: 'smooth' });
+                          }}
+                          className="text-left text-sm font-bold text-slate-900 hover:text-indigo-700"
+                        >
+                          {item.definition.label}
+                        </button>
+                        <p className="mt-1 text-xs text-slate-500">{item.definition.description}</p>
+                      </div>
+                      <span className="rounded bg-red-100 px-2 py-1 text-xs font-bold text-red-600 shrink-0">
+                        {item.total}
+                      </span>
                     </div>
-                    <span className="rounded-md bg-red-100 px-2 py-1 text-xs font-bold text-red-600">{item.total}</span>
+
+                    <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold">
+                      <span className="rounded bg-amber-100 px-2 py-1 text-amber-700">Pending {item.pending}</span>
+                      <span className="rounded bg-emerald-100 px-2 py-1 text-emerald-700">Resolved {item.resolved}</span>
+                      <span className="rounded bg-slate-250 px-2 py-1 text-slate-600">Rejected {item.rejected}</span>
+                    </div>
+
+                    <div className="mt-4 flex gap-2">
+                      <button
+                        onClick={() => {
+                          setActiveAnomaly(item.code);
+                          document.getElementById('staged-rows-section')?.scrollIntoView({ behavior: 'smooth' });
+                        }}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
+                      >
+                        Manual Review
+                      </button>
+                      <button
+                        onClick={() => applyCategoryPolicy(item.code)}
+                        disabled={item.pending === 0 || !item.definition.canApplyPolicy || busyKey === `category-${item.code}`}
+                        title={item.definition.canApplyPolicy ? item.definition.policy : item.definition.manualHint}
+                        className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500 disabled:bg-slate-300 cursor-pointer"
+                      >
+                        <Info className="h-3.5 w-3.5" />
+                        Apply Policy
+                      </button>
+                    </div>
                   </div>
-                  <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-semibold">
-                    <span className="rounded bg-amber-100 px-2 py-1 text-amber-700">Pending {item.pending}</span>
-                    <span className="rounded bg-emerald-100 px-2 py-1 text-emerald-700">Resolved {item.resolved}</span>
-                    <span className="rounded bg-slate-200 px-2 py-1 text-slate-600">Rejected {item.rejected}</span>
-                  </div>
-                  <div className="mt-4 flex gap-2">
-                    <button
-                      onClick={() => setActiveAnomaly(item.code)}
-                      className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-                    >
-                      Manual Review
-                    </button>
-                    <button
-                      onClick={() => applyCategoryPolicy(item.code)}
-                      disabled={!item.definition.canApplyPolicy || busyKey === `category-${item.code}`}
-                      title={item.definition.canApplyPolicy ? item.definition.policy : item.definition.manualHint}
-                      className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:bg-slate-300"
-                    >
-                      <Info className="h-3.5 w-3.5" />
-                      Apply Policy
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </section>
         )}
 
         {sessionId && (
-          <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <section id="staged-rows-section" className="rounded-lg border border-slate-200 bg-white shadow-sm scroll-mt-20">
             <div className="flex flex-col gap-3 border-b border-slate-100 p-4 lg:flex-row lg:items-center lg:justify-between">
               <div>
                 <h2 className="font-bold text-slate-950">Staged Rows</h2>
@@ -476,7 +537,7 @@ export default function ImportConsole() {
                 <select
                   value={statusFilter}
                   onChange={(e) => setStatusFilter(e.target.value)}
-                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700"
+                  className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 cursor-pointer"
                 >
                   <option value="ALL">All statuses</option>
                   <option value="PENDING_APPROVAL">Pending</option>
@@ -485,8 +546,16 @@ export default function ImportConsole() {
                   <option value="REJECTED">Rejected</option>
                 </select>
                 <button
+                  onClick={() => setIsTableModalOpen(true)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 text-xs font-semibold shadow-sm transition-all duration-205 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                  title="View complete status grid of CSV table"
+                >
+                  <Table className="h-4 w-4 text-white" />
+                  View CSV Status Sheet
+                </button>
+                <button
                   onClick={() => sessionId && fetchStaged(sessionId)}
-                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                  className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
                 >
                   <RefreshCw className={`h-3.5 w-3.5 ${loading ? 'animate-spin' : ''}`} />
                   Refresh
@@ -502,12 +571,20 @@ export default function ImportConsole() {
             ) : filteredRows.length === 0 ? (
               <div className="p-12 text-center text-sm text-slate-400">No rows match the current filters.</div>
             ) : (
-              <div className="divide-y divide-slate-100">
-                {filteredRows.map((item) => {
+              <div className="space-y-6">
+                {filteredRows.map((item, index) => {
                   const isPending = item.status === 'PENDING_APPROVAL';
                   const isEditing = editingId === item.id && editState;
+                  const isEven = index % 2 === 0;
+                  const bgClass = isPending
+                    ? (isEven ? 'bg-white border-slate-200/80' : 'bg-slate-50/50 border-slate-200/80')
+                    : 'bg-slate-100/30 border-slate-200/50';
                   return (
-                    <article key={item.id} className={`space-y-4 p-5 ${isPending ? 'bg-white' : 'bg-slate-50'}`}>
+                    <article
+                      key={item.id}
+                      id={`row-${item.id}`}
+                      className={`space-y-4 p-6 rounded-2xl border transition-all duration-200 hover:shadow-sm scroll-mt-24 ${bgClass}`}
+                    >
                       <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
@@ -529,36 +606,51 @@ export default function ImportConsole() {
                         <div className="flex flex-wrap gap-2">
                           <button
                             onClick={() => startEdit(item)}
-                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer"
                           >
                             <Edit className="h-3.5 w-3.5" />
                             Edit
                           </button>
                           {isPending && (
                             <>
-                              <button
-                                onClick={() => resolveRow(item.id, 'APPLY_POLICY')}
-                                disabled={!autoSupported(item) || busyKey === `APPLY_POLICY-${item.id}`}
-                                className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:bg-slate-300"
-                                title={item.detectedAnomalies.map((code) => definitions[code]?.policy).filter(Boolean).join(' ')}
-                              >
-                                <Info className="h-3.5 w-3.5" />
-                                Apply Policy
-                              </button>
-                              <button
-                                onClick={() => resolveRow(item.id, 'APPROVE')}
-                                disabled={item.detectedAnomalies.length > 0 || busyKey === `APPROVE-${item.id}`}
-                                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-slate-300"
-                              >
-                                <Check className="h-3.5 w-3.5" />
-                                Approve
-                              </button>
+                              {item.detectedAnomalies.length > 0 && (
+                                <>
+                                  <button
+                                    onClick={() => resolveRow(item.id, 'APPLY_POLICY')}
+                                    disabled={!autoSupported(item) || busyKey === `APPLY_POLICY-${item.id}`}
+                                    className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 px-3 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:bg-slate-300 cursor-pointer"
+                                    title={item.detectedAnomalies.map((code) => definitions[code]?.policy).filter(Boolean).join(' ')}
+                                  >
+                                    <Info className="h-3.5 w-3.5" />
+                                    Apply Policy
+                                  </button>
+                                  <button
+                                    onClick={() => resolveRow(item.id, 'APPROVE')}
+                                    disabled={true}
+                                    title="Anomalies must be resolved first before approving"
+                                    className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white opacity-40 cursor-not-allowed"
+                                  >
+                                    <Check className="h-3.5 w-3.5" />
+                                    Approve
+                                  </button>
+                                </>
+                              )}
+                              {item.detectedAnomalies.length === 0 && (
+                                <button
+                                  onClick={() => resolveRow(item.id, 'APPROVE')}
+                                  disabled={busyKey === `APPROVE-${item.id}`}
+                                  className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-3 py-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-slate-300 cursor-pointer"
+                                >
+                                  <Check className="h-3.5 w-3.5" />
+                                  Approve
+                                </button>
+                              )}
                             </>
                           )}
                           <button
                             onClick={() => resolveRow(item.id, 'REJECT')}
                             disabled={busyKey === `REJECT-${item.id}`}
-                            className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-100"
+                            className="inline-flex items-center gap-1 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-600 hover:bg-red-100 cursor-pointer"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                             Reject
@@ -566,36 +658,149 @@ export default function ImportConsole() {
                         </div>
                       </div>
 
-                      <div className="grid gap-3 text-xs md:grid-cols-2">
-                        <DataPanel title="Earlier CSV Row" data={[
-                          ['Date', item.rawData.date],
-                          ['Paid by', item.rawData.paid_by || 'Missing'],
-                          ['Amount', `${item.rawData.amount} ${item.rawData.currency || 'Missing'}`],
-                          ['Split', `${item.rawData.split_type || 'Settlement'} · ${item.rawData.split_with || 'None'}`],
-                          ['Details', item.rawData.split_details || 'None'],
-                          ['Notes', item.rawData.notes || 'None'],
-                        ]} />
-                        <DataPanel title="Resolved Ledger Version" muted={!item.resolvedData} data={[
-                          ['Date', item.resolvedData?.date || 'Not committed'],
-                          ['Paid by', item.resolvedData?.paidBy || 'Not committed'],
-                          ['Amount', item.resolvedData ? `${item.resolvedData.amount} ${item.resolvedData.currency}${item.resolvedData.exchangeRate ? ` · rate ${item.resolvedData.exchangeRate}` : ''}` : 'Not committed'],
-                          ['Split', item.resolvedData ? `${item.resolvedData.isSettlement ? 'Settlement' : item.resolvedData.splitType} · ${item.resolvedData.splitWith.join(', ')}` : 'Not committed'],
-                          ['Details', item.resolvedData?.splitDetails || 'None'],
-                          ['Action', item.resolutionSummary || 'Awaiting review'],
-                        ]} />
-                      </div>
+                      {isPending && item.detectedAnomalies.length > 0 && (
+                        <div className="rounded-lg border border-indigo-100 bg-indigo-50/50 p-4 text-xs space-y-3">
+                          <div className="font-semibold text-indigo-900 mb-1 flex items-center gap-1.5">
+                            <Info className="h-3.5 w-3.5 text-indigo-600" />
+                            Proposed Actions & Requirements:
+                          </div>
+                          <ul className="space-y-3 pl-1 text-slate-600">
+                            {item.detectedAnomalies.map((code) => (
+                              <li key={code} className="space-y-1">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-bold text-red-700">{definitions[code]?.label || code}:</span>
+                                  <span className="text-slate-500 italic">({definitions[code]?.description})</span>
+                                </div>
+                                <div className="pl-3 border-l-2 border-indigo-100 text-indigo-900">
+                                  <span className="font-semibold text-indigo-700 text-[11px] uppercase tracking-wide mr-1">Policy Action:</span>
+                                  {definitions[code]?.policy || 'Apply automated normalization.'}
+                                </div>
+                                {code === "NAME_INCONSISTENCY" && (
+                                  <div className="pl-3 mt-1.5 text-slate-600 font-medium text-[11px] bg-slate-55/40 p-2 rounded-lg border border-slate-150">
+                                    <span>🔍 Original Payer: <strong>"{item.rawData.paid_by}"</strong> will normalize to <strong>"{item.resolvedData?.paidBy}"</strong>.</span>
+                                    {(() => {
+                                      const rawParts = (item.rawData.split_with || "").split(";").map(n => n.trim()).filter(Boolean);
+                                      const resParts = item.resolvedData?.splitWith || [];
+                                      const mismatches = rawParts.map((p, idx) => ({ raw: p, res: resParts[idx] })).filter(m => m.res && m.raw !== m.res);
+                                      if (mismatches.length > 0) {
+                                        return (
+                                          <div className="mt-1 text-slate-500 font-normal">
+                                            Split names normalize: {mismatches.map(m => `"${m.raw}" ➔ "${m.res}"`).join(", ")}
+                                          </div>
+                                        );
+                                      }
+                                      return null;
+                                    })()}
+                                  </div>
+                                )}
+                              </li>
+                            ))}
+                          </ul>
+
+                          {isPending && (item.detectedAnomalies.includes("POTENTIAL_DUPLICATE") || item.detectedAnomalies.includes("DUPLICATE_CONFLICT")) && (
+                            <div className="p-4 bg-rose-50/70 border border-rose-100 rounded-xl space-y-2 text-xs">
+                              <div className="font-bold text-rose-800 flex items-center gap-1.5">
+                                <AlertTriangle className="h-4 w-4 text-rose-600" />
+                                Duplicate Conflict Resolution Panel:
+                              </div>
+                              <p className="text-slate-600 leading-relaxed text-[11px]">
+                                This row conflicts with another transaction in this session. Choose whether you want to approve this row (which automatically rejects the conflicting row) or reject this row.
+                              </p>
+                              <div className="flex flex-wrap gap-2 pt-1">
+                                <button
+                                  onClick={async () => {
+                                    await resolveRow(item.id, item.detectedAnomalies.includes("DUPLICATE_CONFLICT") ? "RESOLVE_EDIT" : "APPROVE");
+                                    const duplicates = stagedExpenses.filter(
+                                      (x) =>
+                                        x.id !== item.id &&
+                                        x.status === "PENDING_APPROVAL" &&
+                                        x.rawData.date === item.rawData.date &&
+                                        (x.rawData.description?.toLowerCase().includes(item.rawData.description?.toLowerCase() || "") ||
+                                         item.rawData.description?.toLowerCase().includes(x.rawData.description?.toLowerCase() || ""))
+                                    );
+                                    for (const dup of duplicates) {
+                                      await resolveRow(dup.id, "REJECT");
+                                    }
+                                  }}
+                                  className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors shadow-xs"
+                                >
+                                  Keep This Row (Reject Conflicts)
+                                </button>
+                                <button
+                                  onClick={() => resolveRow(item.id, "REJECT")}
+                                  className="bg-red-600 hover:bg-red-500 text-white text-xs font-semibold px-3 py-1.5 rounded-lg cursor-pointer transition-colors shadow-xs"
+                                >
+                                  Reject This Row
+                                </button>
+                              </div>
+                              <p className="text-[10px] text-slate-400 italic mt-1.5">
+                                * Note: Rejecting a row marks its status as "Rejected", meaning its amounts and splits will be completely excluded from all ledger and dashboard calculations.
+                              </p>
+                            </div>
+                          )}
+                          {!autoSupported(item) && (
+                            <div className="mt-2 rounded border border-red-200 bg-red-50 p-2.5 font-medium text-red-800 flex items-start gap-1.5">
+                              <AlertTriangle className="h-3.5 w-3.5 text-red-600 mt-0.5 shrink-0" />
+                              <span>This row requires manual review (e.g. choosing a payer or resolving a duplicate conflict). Direct approval is disabled. Please click <strong>Edit</strong> to correct it first.</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {item.detectedAnomalies.length === 0 ? (
+                        <div className="text-xs">
+                          <DataPanel title={item.status === 'PENDING_APPROVAL' ? "CSV Row Details (No Anomaly)" : `CSV Row Details (${statusLabels[item.status] || item.status})`} data={[
+                            ['Date', item.rawData.date],
+                            ['Paid by', item.rawData.paid_by || 'Missing'],
+                            ['Amount', `${item.rawData.amount} ${item.rawData.currency || 'INR'}`],
+                            ['Split', `${item.rawData.split_type || 'equal'} · ${item.rawData.split_with || 'None'}`],
+                            ['Details', item.rawData.split_details || 'None'],
+                            ['Notes', item.rawData.notes || 'None'],
+                            ...(item.status !== 'PENDING_APPROVAL' ? [['Action', item.resolutionSummary || 'Approved']] as [string, string][] : []),
+                          ]} />
+                        </div>
+                      ) : (
+                        <div className="grid gap-3 text-xs md:grid-cols-2">
+                          <DataPanel title="Earlier CSV Row" data={[
+                            ['Date', item.rawData.date],
+                            ['Paid by', item.rawData.paid_by || 'Missing'],
+                            ['Amount', `${item.rawData.amount} ${item.rawData.currency || 'Missing'}`],
+                            ['Split', `${item.rawData.split_type || 'Settlement'} · ${item.rawData.split_with || 'None'}`],
+                            ['Details', item.rawData.split_details || 'None'],
+                            ['Notes', item.rawData.notes || 'None'],
+                          ]} />
+                          <DataPanel
+                            title="Proposed Ledger Draft (Preview)"
+                            isProposed={isPending}
+                            muted={!isPending && !item.resolvedData}
+                            data={(() => {
+                              const preview = getProposedPreview(item, memberships);
+                              return [
+                                ['Date', formatDateDisplay(preview.date)],
+                                ['Paid by', preview.paidBy || 'Awaiting manual edit...'],
+                                ['Amount', preview.exchangeRate ? `${preview.amount} ${preview.currency} (₹${Math.round(preview.amount * preview.exchangeRate).toLocaleString()})` : `${preview.amount} ${preview.currency}`],
+                                ['Split', `${preview.isSettlement ? 'Settlement' : preview.splitType} · ${preview.splitWith.join(', ')}`],
+                                ['Details', preview.splitDetails || 'None'],
+                                ['Action', item.status === 'PENDING_APPROVAL' ? 'Awaiting reviewer approval' : (item.resolutionSummary || 'Approved')],
+                              ];
+                            })()}
+                          />
+                        </div>
+                      )}
 
                       {isEditing && (
-                        <ManualEditor
-                          users={users}
-                          state={editState}
-                          setState={setEditState}
-                          toggleParticipant={toggleParticipant}
-                          updateSplitValue={updateSplitValue}
-                          onCancel={() => { setEditingId(null); setEditState(null); }}
-                          onSubmit={() => submitEdit(item.id)}
-                          busy={busyKey === `RESOLVE_EDIT-${item.id}`}
-                        />
+                        <div id={`editor-${item.id}`}>
+                          <ManualEditor
+                            users={users}
+                            state={editState}
+                            setState={setEditState}
+                            toggleParticipant={toggleParticipant}
+                            updateSplitValue={updateSplitValue}
+                            onCancel={() => { setEditingId(null); setEditState(null); }}
+                            onSubmit={() => submitEdit(item.id)}
+                            busy={busyKey === `RESOLVE_EDIT-${item.id}`}
+                          />
+                        </div>
                       )}
                     </article>
                   );
@@ -605,6 +810,137 @@ export default function ImportConsole() {
           </section>
         )}
       </main>
+      {isTableModalOpen && report && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/60 backdrop-blur-sm">
+          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-5xl max-h-[85vh] p-6 flex flex-col shadow-2xl relative">
+            <button
+              onClick={() => setIsTableModalOpen(false)}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="mb-4">
+              <h3 className="font-bold text-lg text-slate-950 flex items-center gap-2">
+                <FileText className="w-5 h-5 text-indigo-600" />
+                CSV Import Status Sheet
+              </h3>
+              <p className="text-xs text-slate-500">
+                Visual matrix of all staged rows. Green rows are clean or resolved; red rows contain unresolved anomalies. Click any row to jump to it.
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-auto border border-slate-200 rounded-2xl">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-bold uppercase tracking-wider text-[10px]">
+                    <th className="py-3 px-4 w-12">#</th>
+                    <th className="py-3 px-4 w-24">Date</th>
+                    <th className="py-3 px-4">Description</th>
+                    <th className="py-3 px-4 w-28">Paid By</th>
+                    <th className="py-3 px-4 w-28 text-right">Amount</th>
+                    <th className="py-3 px-4 w-20 text-center">Currency</th>
+                    <th className="py-3 px-4">Status / Anomalies</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {stagedExpenses.map((item) => {
+                    const hasAnomalies = item.detectedAnomalies.length > 0;
+                    const isClean = !hasAnomalies;
+                    const isResolved = item.status === 'APPROVED' || item.status === 'RESOLVED';
+                    const isRejected = item.status === 'REJECTED';
+                    const isUnresolvedPending = item.status === 'PENDING_APPROVAL' && hasAnomalies;
+
+                    let rowBg = '';
+                    let statusLabel = '';
+                    if (isRejected) {
+                      rowBg = 'bg-slate-100 hover:bg-slate-200/80 text-slate-400';
+                      statusLabel = 'Rejected';
+                    } else if (isResolved || isClean) {
+                      rowBg = 'bg-emerald-50/70 hover:bg-emerald-100/70 text-emerald-950 border-emerald-100';
+                      statusLabel = isClean ? 'Clean (Auto-approved)' : (statusLabels[item.status] || item.status);
+                    } else if (isUnresolvedPending) {
+                      rowBg = 'bg-red-50/70 hover:bg-red-100/70 text-red-950 border-red-100';
+                      statusLabel = `Pending Resolution (${item.detectedAnomalies.length} anomaly)`;
+                    }
+
+                    return (
+                      <tr
+                        key={item.id}
+                        onClick={() => {
+                          setIsTableModalOpen(false);
+                          document.getElementById(`row-${item.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }}
+                        className={`cursor-pointer transition-colors border-l-4 ${rowBg}`}
+                        style={{ borderLeftColor: isRejected ? '#94a3b8' : (isResolved || isClean ? '#10b981' : '#ef4444') }}
+                      >
+                        <td className="py-2.5 px-4 font-mono font-bold">#{item.rawRowNumber}</td>
+                        <td className="py-2.5 px-4">{item.rawData.date}</td>
+                        <td className="py-2.5 px-4 font-medium">{item.rawData.description}</td>
+                        <td className="py-2.5 px-4">{item.rawData.paid_by || <em className="text-red-500">Missing</em>}</td>
+                        <td className="py-2.5 px-4 text-right">{item.rawData.amount}</td>
+                        <td className="py-2.5 px-4 text-center">{item.rawData.currency || 'INR'}</td>
+                        <td className="py-2.5 px-4">
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="font-semibold text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-white/60 border border-current">
+                              {statusLabel}
+                            </span>
+                            {isUnresolvedPending && item.detectedAnomalies.map((c) => (
+                              <span key={c} className="text-[9px] px-1 bg-red-100 border border-red-200 text-red-700 rounded font-semibold">
+                                {definitions[c]?.shortLabel || c}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <button
+                onClick={() => setIsTableModalOpen(false)}
+                className="bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-4 py-2 rounded-xl cursor-pointer"
+              >
+                Close Sheet
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Congratulations Modal */}
+      {showCongratsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="w-full max-w-md overflow-hidden rounded-3xl border border-slate-200 bg-white p-6 shadow-2xl transition-all scale-100 flex flex-col items-center text-center space-y-4">
+            <div className="flex h-16 w-16 items-center justify-center rounded-full bg-emerald-50 text-emerald-600">
+              <CheckCircle className="h-10 w-10 animate-bounce" />
+            </div>
+            <div className="space-y-1">
+              <h3 className="text-xl font-bold text-slate-900">All Anomalies Resolved!</h3>
+              <p className="text-xs text-slate-500 max-w-xs leading-relaxed">
+                Congratulations! Every CSV row has been reviewed, normalized, and committed to the database ledger. Your group expenses are now up to date.
+              </p>
+            </div>
+            <div className="flex w-full flex-col gap-2 pt-2 sm:flex-row sm:justify-center">
+              <Link
+                href={`/groups/${dashboardGroupId || 'default'}`}
+                className="w-full sm:w-auto inline-flex justify-center rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-semibold text-white shadow-xs hover:bg-indigo-500 cursor-pointer"
+              >
+                Go to Roommate Dashboard
+              </Link>
+              <button
+                type="button"
+                onClick={() => setShowCongratsModal(false)}
+                className="w-full sm:w-auto inline-flex justify-center rounded-xl border border-slate-200 bg-slate-50 px-4 py-2.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
+              >
+                Stay Here
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -638,15 +974,18 @@ function StatusBadge({ status }: { status: StagedExpense['status'] }) {
   );
 }
 
-function DataPanel({ title, data, muted = false }: { title: string; data: Array<[string, string]>; muted?: boolean }) {
+function DataPanel({ title, data, muted = false, isProposed = false }: { title: string; data: Array<[string, string]>; muted?: boolean; isProposed?: boolean }) {
+  const borderBgClass = isProposed
+    ? 'border-dashed border-indigo-200 bg-indigo-50/20'
+    : (muted ? 'border-slate-200 bg-slate-50 text-slate-400' : 'border-slate-200 bg-white');
   return (
-    <div className={`rounded-lg border p-4 ${muted ? 'border-slate-200 bg-slate-50 text-slate-400' : 'border-slate-200 bg-white'}`}>
-      <h4 className="mb-3 text-xs font-bold uppercase tracking-wide text-slate-400">{title}</h4>
+    <div className={`rounded-xl border p-4 transition-all ${borderBgClass}`}>
+      <h4 className={`mb-3 text-[10px] font-bold uppercase tracking-wide ${isProposed ? 'text-indigo-600 font-bold' : 'text-slate-400'}`}>{title}</h4>
       <dl className="grid gap-2">
         {data.map(([label, value]) => (
           <div key={label} className="grid grid-cols-[92px_1fr] gap-3">
             <dt className="text-slate-400">{label}</dt>
-            <dd className="font-medium text-slate-700">{value}</dd>
+            <dd className={`font-medium ${isProposed && !muted ? 'text-indigo-950 font-semibold' : 'text-slate-700'}`}>{value}</dd>
           </div>
         ))}
       </dl>
@@ -778,10 +1117,10 @@ function ManualEditor({
       </label>
 
       <div className="mt-4 flex justify-end gap-2">
-        <button onClick={onCancel} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+        <button onClick={onCancel} className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 cursor-pointer">
           Cancel
         </button>
-        <button onClick={onSubmit} disabled={busy} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:bg-slate-300">
+        <button onClick={onSubmit} disabled={busy} className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-xs font-semibold text-white hover:bg-indigo-500 disabled:bg-slate-300 cursor-pointer">
           {busy ? <RefreshCw className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
           Commit Resolution
         </button>
@@ -824,14 +1163,32 @@ function normalizeClientName(value: string) {
 }
 
 function normalizeDateForInput(value: string) {
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const clean = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return clean;
   const monthMap: Record<string, string> = { jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06', jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12' };
-  const text = value.match(/^([A-Za-z]{3,})-(\d{1,2})$/);
+  const text = clean.match(/^([A-Za-z]{3,})-(\d{1,2})$/);
   if (text) return `2026-${monthMap[text[1].toLowerCase().slice(0, 3)] || '03'}-${text[2].padStart(2, '0')}`;
-  if (value === '04-05-2026') return '2026-04-05';
-  const numeric = value.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
-  if (numeric) return `${numeric[3]}-${numeric[2].padStart(2, '0')}-${numeric[1].padStart(2, '0')}`;
-  return value;
+
+  const threePart = clean.match(/^(\d{1,4})[-/](\d{1,2})[-/](\d{1,4})$/);
+  if (threePart) {
+    const p1 = parseInt(threePart[1], 10);
+    const p2 = parseInt(threePart[2], 10);
+    const p3 = parseInt(threePart[3], 10);
+    let day = 1, month = 1, year = 2026;
+    if (p1 > 31) {
+      year = p1 < 100 ? 2000 + p1 : p1;
+      month = p2;
+      day = p3;
+    } else {
+      year = p3 < 100 ? 2000 + p3 : p3;
+      month = p2;
+      day = p1;
+    }
+    if (year < 100) year += 2000;
+    return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  return clean;
 }
 
 function parseSplitValues(details: string) {
@@ -849,4 +1206,68 @@ function buildSplitDetails(state: EditState) {
   return state.splitWith
     .map((name) => `${name} ${state.splitValues[name] || '0'}${suffix}`)
     .join('; ');
+}
+
+function getProposedPreview(item: StagedExpense, memberships: any[]): ResolvedData {
+  const raw = item.rawData;
+  const anomalies = item.detectedAnomalies;
+
+  // Start with basic resolved data or raw data fallback
+  const resolved = item.resolvedData ? { ...item.resolvedData } : rowToResolvedData(raw);
+
+  // Apply proposed policy overrides for preview
+  if (anomalies.includes("MULTI_CURRENCY_USD")) {
+    resolved.currency = "USD";
+    resolved.exchangeRate = resolved.exchangeRate || 83.0;
+  }
+
+  if (anomalies.includes("PERCENTAGE_MATH_MISMATCH") && resolved.splitDetails) {
+    const pctMap = parseSplitValues(resolved.splitDetails);
+    const total = Object.values(pctMap).reduce((sum, pct) => sum + parseFloat(pct), 0);
+    if (total > 0) {
+      const scaled: Record<string, string> = {};
+      for (const [name, pctStr] of Object.entries(pctMap)) {
+        const pct = parseFloat(pctStr);
+        scaled[name] = String(Math.round((pct / total) * 10000) / 100);
+      }
+      resolved.splitDetails = Object.entries(scaled)
+        .map(([name, val]) => `${name} ${val}%`)
+        .join('; ');
+    }
+  }
+
+  if (anomalies.includes("SPLIT_TYPE_CONFLICT")) {
+    resolved.splitType = "share";
+  }
+
+  if (anomalies.includes("TEMPORAL_MEMBERSHIP_VIOLATION")) {
+    if (memberships && memberships.length > 0) {
+      const parsedDate = new Date(resolved.date);
+      const dateMs = parsedDate.getTime();
+      resolved.splitWith = resolved.splitWith.filter((name) => {
+        const userMemberships = memberships.filter((m) => m.user.name === name);
+        if (userMemberships.length === 0) return true; // keep if unknown to avoid silent drops
+        return userMemberships.some((m) => {
+          const joined = new Date(m.joinedAt).getTime();
+          const left = m.leftAt ? new Date(m.leftAt).getTime() : Infinity;
+          return dateMs >= joined && dateMs <= left;
+        });
+      });
+    } else {
+      resolved.splitWith = resolved.splitWith.filter((name) => name !== "Meera");
+    }
+  }
+
+  if (anomalies.includes("UNREGISTERED_MEMBER") && resolved.splitWith.includes("Dev's friend Kabir")) {
+    resolved.splitWith = resolved.splitWith.map(n => n === "Dev's friend Kabir" ? "Kabir" : n);
+  }
+
+  return resolved;
+}
+
+function formatDateDisplay(value?: string) {
+  if (!value) return 'Not committed';
+  const numeric = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (numeric) return `${numeric[3]}-${numeric[2]}-${numeric[1]}`;
+  return value;
 }

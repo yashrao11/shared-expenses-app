@@ -73,6 +73,12 @@ export async function GET(request: NextRequest) {
     const rejected = allSessionRows.filter((row) => row.status === 'REJECTED').length;
     const anomalyRows = allSessionRows.filter((row) => JSON.parse(row.detectedAnomalies || '[]').length > 0).length;
 
+    const memberships = await prisma.groupMembership.findMany({
+      include: {
+        user: true,
+      },
+    });
+
     return NextResponse.json({
       success: true,
       sessionId,
@@ -88,6 +94,7 @@ export async function GET(request: NextRequest) {
       },
       anomalyDefinitions: ANOMALY_DEFINITIONS,
       stagedExpenses: parsedExpenses,
+      memberships,
     });
   } catch (err: unknown) {
     console.error('Error fetching staged expenses:', err);

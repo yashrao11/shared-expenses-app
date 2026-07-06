@@ -1,12 +1,12 @@
 'use client';
 
-import { useEffect, useState, use } from 'react';
+import { useEffect, useState, use, Fragment, useMemo } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { 
   ArrowLeft, Users, CreditCard, BarChart2, ListFilter, 
   PlusCircle, RefreshCw, Send, ShieldCheck, UserCheck,
-  AlertTriangle, X, Home
+  AlertTriangle, X, Home, Calendar
 } from 'lucide-react';
 
 interface MemberBalance {
@@ -50,8 +50,114 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
   const [groupName, setGroupName] = useState('Flatmates Shared Space');
   const [balances, setBalances] = useState<MemberBalance[]>([]);
   const [simplifiedDebts, setSimplifiedDebts] = useState<SimplifiedDebt[]>([]);
-  const [selectedLedgerUserId, setSelectedLedgerUserId] = useState('');
-  const [ledger, setLedger] = useState<LedgerItem[]>([]);
+  const [ledger, setLedger] = useState<any[]>([]);
+  const [groupMemberships, setGroupMemberships] = useState<any[]>([]);
+  const [expandedLedgerId, setExpandedLedgerId] = useState<string | null>(null);
+  const [detailModalItem, setDetailModalItem] = useState<{
+    type: 'roommate' | 'settlement';
+    data: any;
+  } | null>(null);
+  const [modalLedger, setModalLedger] = useState<any[]>([]);
+  const [modalLedgerLoading, setModalLedgerLoading] = useState(false);
+  const [expandModalDebts, setExpandModalDebts] = useState(false);
+  const [expandModalCredits, setExpandModalCredits] = useState(false);
+  const [activeTab, setActiveTab] = useState<'balances' | 'monthly'>('balances');
+  const [groupLedger, setGroupLedger] = useState<any[]>([]);
+
+  const fetchGroupLedger = async () => {
+    try {
+      const res = await fetch(`/api/ledger?userId=all&groupId=${groupId}`);
+      const data = await res.json();
+      if (data.success) {
+        setGroupLedger(data.ledger);
+      }
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
+  const openRoommateDetail = async (member: MemberBalance) => {
+    setExpandModalDebts(false);
+    setExpandModalCredits(false);
+    setDetailModalItem({ type: 'roommate', data: member });
+    setModalLedgerLoading(true);
+    try {
+      const res = await fetch(`/api/ledger?userId=${member.userId}&groupId=${groupId}`);
+      const data = await res.json();
+      if (data.success) {
+        setModalLedger(data.ledger);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setModalLedgerLoading(false);
+    }
+  };
+
+  const openSettlementDetail = async (settlement: SimplifiedDebt) => {
+    setExpandModalDebts(false);
+    setExpandModalCredits(false);
+    setDetailModalItem({ type: 'settlement', data: settlement });
+    setModalLedgerLoading(true);
+    try {
+      const res = await fetch(`/api/ledger?userId=${settlement.fromUserId}&groupId=${groupId}`);
+      const data = await res.json();
+      if (data.success) {
+        setModalLedger(data.ledger);
+      }
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setModalLedgerLoading(false);
+    }
+  };
+
+  const monthlyBreakdown = useMemo(() => {
+    const months: Record<string, {
+      monthKey: string;
+      totalSpend: number;
+      members: Record<string, { paid: number; owed: number }>;
+    }> = {};
+
+    for (const exp of groupLedger) {
+      const date = new Date(exp.date);
+      if (isNaN(date.getTime())) continue;
+
+      const monthName = date.toLocaleString('default', { month: 'long', year: 'numeric' });
+
+      if (!months[monthName]) {
+        months[monthName] = {
+          monthKey: monthName,
+          totalSpend: 0,
+          members: {}
+        };
+        for (const u of users) {
+          months[monthName].members[u.name] = { paid: 0, owed: 0 };
+        }
+      }
+
+      if (!exp.isSettlement) {
+        months[monthName].totalSpend += exp.totalAmount;
+
+        const payerName = exp.paidByUserName;
+        if (months[monthName].members[payerName]) {
+          months[monthName].members[payerName].paid += exp.totalAmount;
+        }
+
+        for (const s of exp.allSplits || []) {
+          if (months[monthName].members[s.userName]) {
+            months[monthName].members[s.userName].owed += s.owedAmount;
+          }
+        }
+      }
+    }
+
+    return Object.values(months).sort((a, b) => {
+      const dateA = new Date(a.monthKey);
+      const dateB = new Date(b.monthKey);
+      return dateB.getTime() - dateA.getTime();
+    });
+  }, [groupLedger, users]);
 
   const [loading, setLoading] = useState(true);
   const [ledgerLoading, setLedgerLoading] = useState(false);
@@ -83,7 +189,6 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
       return;
     }
     setCurrentUser({ id: savedId, name: savedName });
-    setSelectedLedgerUserId(savedId);
 
     fetch('/api/users')
       .then((r) => r.json())
@@ -94,8 +199,10 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
   }, [groupId, router]);
 
   useEffect(() => {
-    if (selectedLedgerUserId) fetchLedger(selectedLedgerUserId);
-  }, [selectedLedgerUserId]);
+    if (currentUser?.id) {
+      fetchLedger(currentUser.id);
+    }
+  }, [currentUser?.id]);
 
   const fetchBalances = async () => {
     setLoading(true);
@@ -106,7 +213,17 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
       if (data.success) {
         setBalances(data.balances);
         setSimplifiedDebts(data.simplifiedDebts);
+        if (data.memberships) setGroupMemberships(data.memberships);
+        await fetchGroupLedger();
       } else {
+        // Heal group not found errors (e.g. after database seeding) by redirecting to a valid group
+        if (data.error && data.error.includes('not found')) {
+          const groupsRes = await fetch('/api/groups').then((r) => r.json());
+          if (groupsRes.success && groupsRes.groups?.length > 0) {
+            router.replace(`/groups/${groupsRes.groups[0].id}`);
+            return;
+          }
+        }
         setErrorMessage(data.error || 'Failed to fetch balances.');
       }
     } catch {
@@ -129,6 +246,22 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
     }
   };
 
+  const getTimelineExplanation = (name: string, dateStr: string) => {
+    const expDate = new Date(dateStr);
+    const m = groupMemberships.find((mem) => mem.user.name === name);
+    if (!m) return "";
+    const joined = new Date(m.joinedAt);
+    const left = m.leftAt ? new Date(m.leftAt) : null;
+    
+    if (expDate < joined) {
+      return `joined later on ${joined.toLocaleDateString()}`;
+    }
+    if (left && expDate > left) {
+      return `moved out earlier on ${left.toLocaleDateString()}`;
+    }
+    return "";
+  };
+
   const handleIdentityChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const userId = e.target.value;
     const matched = users.find(u => u.id === userId);
@@ -136,7 +269,6 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
       localStorage.setItem('userId', matched.id);
       localStorage.setItem('userName', matched.name);
       setCurrentUser({ id: matched.id, name: matched.name });
-      setSelectedLedgerUserId(matched.id);
     }
   };
 
@@ -172,7 +304,7 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
         setSettleAmount('');
         setSettleDate('');
         await fetchBalances();
-        if (selectedLedgerUserId) await fetchLedger(selectedLedgerUserId);
+        if (currentUser?.id) await fetchLedger(currentUser.id);
       } else {
         setErrorMessage(data.error || 'Failed to record settlement.');
       }
@@ -220,7 +352,7 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
         setExpenseDate('');
         setExpenseNotes('');
         await fetchBalances();
-        if (selectedLedgerUserId) await fetchLedger(selectedLedgerUserId);
+        if (currentUser?.id) await fetchLedger(currentUser.id);
       } else {
         setErrorMessage(data.error || 'Failed to create expense.');
       }
@@ -285,6 +417,45 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
 
       {/* Main Body */}
       <main className="flex-1 max-w-6xl w-full mx-auto px-6 py-8 space-y-8">
+        {currentUser && (
+          <div className="bg-slate-100 border border-slate-200 rounded-2xl p-4 flex flex-col md:flex-row justify-between items-start md:items-center gap-4 text-slate-800">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center font-bold text-lg select-none">
+                {currentUser.name[0]}
+              </div>
+              <div>
+                <span className="text-[10px] text-slate-450 uppercase font-bold tracking-wider block">Active Member Profile</span>
+                <h2 className="text-base font-bold text-slate-900 leading-tight">{currentUser.name}</h2>
+              </div>
+            </div>
+            
+            <div className="flex flex-wrap gap-2.5 items-center w-full md:w-auto">
+              <span className="text-xs text-slate-500 font-semibold">Quick switch roommate:</span>
+              <div className="flex flex-wrap gap-1.5">
+                {users.map((u) => {
+                  const isActive = u.id === currentUser.id;
+                  return (
+                    <button
+                      key={u.id}
+                      onClick={() => {
+                        localStorage.setItem('userId', u.id);
+                        localStorage.setItem('userName', u.name);
+                        setCurrentUser({ id: u.id, name: u.name });
+                      }}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-bold transition-all cursor-pointer border ${
+                        isActive
+                          ? 'bg-indigo-600 text-white border-transparent shadow-xs scale-105'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {u.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
 
         {errorMessage && (
           <div className="bg-red-50 border border-red-200 text-red-700 p-4 rounded-xl flex items-center gap-3">
@@ -293,13 +464,39 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
           </div>
         )}
 
+        {/* Tab Controls */}
+        <div className="flex gap-2 border-b border-slate-200 pb-px">
+          <button
+            onClick={() => setActiveTab('balances')}
+            className={`px-4 py-2 text-sm font-bold border-b-2 transition-all cursor-pointer ${
+              activeTab === 'balances'
+                ? 'border-indigo-600 text-indigo-600 font-bold border-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-750'
+            }`}
+          >
+            📊 Roommate Dashboard
+          </button>
+          <button
+            onClick={() => setActiveTab('monthly')}
+            className={`px-4 py-2 text-sm font-bold border-b-2 transition-all cursor-pointer ${
+              activeTab === 'monthly'
+                ? 'border-indigo-600 text-indigo-600 font-bold border-indigo-600'
+                : 'border-transparent text-slate-500 hover:text-slate-750'
+            }`}
+          >
+            📅 Monthly Breakdown
+          </button>
+        </div>
+
         {loading ? (
           <div className="flex flex-col items-center justify-center py-32 gap-3 text-slate-400 text-sm">
             <RefreshCw className="w-8 h-8 animate-spin text-indigo-500" />
             Calculating balances and debt graph...
           </div>
         ) : (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          <>
+            {activeTab === 'balances' && (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
 
             {/* Left Column */}
             <div className="lg:col-span-2 space-y-8">
@@ -320,9 +517,14 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
                   {balances.map((m) => {
                     const isPositive = m.netBalance >= 0;
                     return (
-                      <div key={m.userId} className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex justify-between items-center hover:border-slate-300 transition-colors">
+                      <div
+                        key={m.userId}
+                        onClick={() => openRoommateDetail(m)}
+                        className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex justify-between items-center hover:border-indigo-200 hover:bg-indigo-50/5 transition-all cursor-pointer hover:scale-[1.01]"
+                        title={`Click to view ${m.userName}'s audit breakdown`}
+                      >
                         <div className="space-y-0.5">
-                          <span className="font-semibold text-slate-800 text-sm">{m.userName}</span>
+                          <span className="font-semibold text-slate-800 text-sm block">{m.userName}</span>
                           <div className="text-[10px] text-slate-400 flex gap-2">
                             <span>Paid: ₹{m.totalPaid.toLocaleString()}</span>
                             <span>Owed: ₹{m.totalOwed.toLocaleString()}</span>
@@ -345,20 +547,7 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
                       <ListFilter className="w-5 h-5 text-indigo-600" />
                       Individual Audit Ledger
                     </h3>
-                    <p className="text-xs text-slate-500">Reconcile aggregates down to individual line item contributions</p>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 flex-shrink-0">Filter:</span>
-                    <select
-                      value={selectedLedgerUserId}
-                      onChange={(e) => setSelectedLedgerUserId(e.target.value)}
-                      className="bg-white border border-slate-200 text-slate-700 text-xs font-semibold rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-indigo-500"
-                    >
-                      {users.map(u => (
-                        <option key={u.id} value={u.id}>{u.name}</option>
-                      ))}
-                    </select>
+                    <p className="text-xs text-slate-500">Audit your contributed items and split shares (Click to expand)</p>
                   </div>
                 </div>
 
@@ -381,21 +570,93 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
                       <tbody className="divide-y divide-slate-50">
                         {ledger.map((item) => {
                           const isPositive = item.myNetImpact >= 0;
+                          const isExpanded = expandedLedgerId === item.expenseId;
                           return (
-                            <tr key={item.expenseId} className="hover:bg-slate-50/80 transition-colors">
-                              <td className="py-3.5 pr-4 text-slate-500">{new Date(item.date).toLocaleDateString()}</td>
-                              <td className="py-3.5 px-4 font-medium text-slate-800">
-                                {item.description}
-                                {item.wasPaidByMe && (
-                                  <span className="ml-2 bg-indigo-50 text-indigo-600 border border-indigo-100 text-[9px] px-1.5 py-0.5 rounded font-semibold">I Paid</span>
-                                )}
-                              </td>
-                              <td className="py-3.5 px-4 text-right text-slate-600">₹{item.totalAmount.toLocaleString()}</td>
-                              <td className="py-3.5 px-4 text-right text-slate-500">₹{item.myOwedShare.toLocaleString()}</td>
-                              <td className={`py-3.5 pl-4 text-right font-semibold ${isPositive ? 'text-emerald-600' : 'text-red-500'}`}>
-                                {isPositive ? '+' : ''}₹{item.myNetImpact.toLocaleString()}
-                              </td>
-                            </tr>
+                            <Fragment key={item.expenseId}>
+                              <tr
+                                onClick={() => setExpandedLedgerId(isExpanded ? null : item.expenseId)}
+                                className="hover:bg-slate-50/80 transition-colors cursor-pointer select-none"
+                              >
+                                <td className="py-3.5 pr-4 text-slate-500">{new Date(item.date).toLocaleDateString()}</td>
+                                <td className="py-3.5 px-4 font-semibold text-slate-800">
+                                  <div className="flex flex-wrap items-center gap-1.5">
+                                    <span>{item.description}</span>
+                                    {item.wasPaidByMe && (
+                                      <span className="bg-indigo-50 text-indigo-600 border border-indigo-150 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">I Paid</span>
+                                    )}
+                                    {item.isSettlement && (
+                                      <span className="bg-emerald-50 text-emerald-600 border border-emerald-150 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Settlement</span>
+                                    )}
+                                  </div>
+                                </td>
+                                <td className="py-3.5 px-4 text-right text-slate-600">₹{item.totalAmount.toLocaleString()}</td>
+                                <td className="py-3.5 px-4 text-right text-slate-500">₹{item.myOwedShare.toLocaleString()}</td>
+                                <td className={`py-3.5 pl-4 text-right font-bold ${isPositive ? 'text-emerald-600' : 'text-red-500'}`}>
+                                  {isPositive ? '+' : ''}₹{item.myNetImpact.toLocaleString()}
+                                </td>
+                              </tr>
+                              {isExpanded && (
+                                <tr className="bg-slate-50/40">
+                                  <td colSpan={5} className="p-4 border-t border-slate-100/50">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-xs text-slate-700">
+                                      <div className="space-y-2">
+                                        <h5 className="font-bold text-slate-900 border-b border-slate-200/55 pb-1">Transaction Details</h5>
+                                        <div className="space-y-1">
+                                          <div className="flex justify-between">
+                                            <span className="text-slate-500 font-medium">Payer:</span>
+                                            <span className="font-bold text-slate-900">{item.paidByUserName}</span>
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-slate-500 font-medium">Original Amount:</span>
+                                            {item.currency === 'USD' ? (
+                                              <span className="font-bold text-indigo-600">
+                                                ${item.rawAmount.toFixed(2)} USD (Converted @ ₹{item.exchangeRate}/USD)
+                                              </span>
+                                            ) : (
+                                              <span className="font-semibold text-slate-800">₹{item.totalAmount.toLocaleString()} INR</span>
+                                            )}
+                                          </div>
+                                          <div className="flex justify-between">
+                                            <span className="text-slate-500 font-medium">Split Method:</span>
+                                            <span className="font-semibold text-slate-850 capitalize">{item.splitType}</span>
+                                          </div>
+                                          {item.notes && (
+                                            <div className="mt-1 bg-slate-50 border border-slate-150 p-2 rounded-lg text-[10px] text-slate-600 italic">
+                                              Notes: {item.notes}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+
+                                      <div className="space-y-2">
+                                        <h5 className="font-bold text-slate-900 border-b border-slate-200/55 pb-1">Roommate Split Shares</h5>
+                                        <div className="space-y-1.5">
+                                          {item.allSplits.map((split: any) => (
+                                            <div key={split.userName} className="flex justify-between items-center bg-white border border-slate-150 p-2 rounded-lg">
+                                              <span className="font-semibold text-slate-700">{split.userName}</span>
+                                              <span className="font-bold text-slate-900">₹{split.owedAmount.toLocaleString()}</span>
+                                            </div>
+                                          ))}
+
+                                          {groupMemberships
+                                            .filter((m) => !item.allSplits.some((s: any) => s.userName === m.user.name))
+                                            .map((m) => {
+                                              const exp = getTimelineExplanation(m.user.name, item.date);
+                                              if (!exp) return null;
+                                              return (
+                                                <div key={m.user.name} className="flex justify-between items-center bg-slate-100/40 border border-dashed border-slate-200 p-2 rounded-lg text-slate-450">
+                                                  <span className="italic">{m.user.name} ({exp})</span>
+                                                  <span className="line-through">₹0</span>
+                                                </div>
+                                              );
+                                            })}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
                           );
                         })}
                       </tbody>
@@ -434,7 +695,6 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
                   </button>
                 </div>
               </div>
-
               {/* Simplified Settlements */}
               <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
                 <h3 className="font-bold text-slate-900 border-b border-slate-100 pb-2 flex items-center gap-2">
@@ -442,34 +702,186 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
                   Simplified Settlements
                 </h3>
 
-                {simplifiedDebts.length === 0 ? (
-                  <div className="py-8 text-center text-slate-400 text-xs border border-dashed border-slate-200 rounded-2xl flex flex-col items-center justify-center gap-2 bg-slate-50">
-                    <ShieldCheck className="w-6 h-6 text-emerald-500" />
-                    <span>All balances settled. No payments due.</span>
-                  </div>
-                ) : (
-                  <div className="space-y-3">
-                    {simplifiedDebts.map((d, index) => (
-                      <div key={index} className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col gap-1.5 hover:border-slate-300 transition-colors">
-                        <div className="text-xs text-slate-400 flex justify-between items-center">
-                          <span>Transfer #{index + 1}</span>
-                          <span className="font-bold text-indigo-600">₹{d.amount.toLocaleString()}</span>
+                {currentUser && (() => {
+                  const myBalance = balances.find(b => b.userId === currentUser.id);
+                  if (!myBalance) return null;
+                  const isPositive = myBalance.netBalance >= 0;
+                  return (
+                    <div
+                      onClick={() => openRoommateDetail(myBalance)}
+                      className="bg-slate-50 border border-slate-200 hover:border-indigo-200 hover:bg-indigo-50/5 transition-all cursor-pointer rounded-2xl p-4 space-y-2 text-xs hover:scale-[1.01]"
+                      title="Click to view your complete audit breakdown"
+                    >
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-500 font-semibold">Your Net Balance:</span>
+                        <span className={`font-bold px-2 py-0.5 rounded ${isPositive ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
+                          {isPositive ? '+' : ''}₹{myBalance.netBalance.toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-550 space-y-1 pt-1.5 border-t border-slate-200/60">
+                        <div className="flex justify-between">
+                          <span>Total you paid:</span>
+                          <span className="font-semibold text-slate-700">₹{myBalance.totalPaid.toLocaleString()}</span>
                         </div>
-                        <div className="text-sm font-medium text-slate-700">
-                          <span className="text-red-500 font-semibold">{d.fromUserName}</span>
-                          <span className="text-slate-400 mx-1.5">→</span>
-                          <span className="text-emerald-600 font-semibold">{d.toUserName}</span>
+                        <div className="flex justify-between">
+                          <span>Total you owe:</span>
+                          <span className="font-semibold text-slate-700">₹{myBalance.totalOwed.toLocaleString()}</span>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                )}
+                    </div>
+                  );
+                })()}
+
+                <div className="space-y-3">
+                  {balances
+                    .filter((b) => b.userId !== currentUser?.id)
+                    .map((other, index) => {
+                      const peerSummary = (() => {
+                        let directDebts = 0;
+                        let offsetCredits = 0;
+                        for (const exp of groupLedger) {
+                          if (exp.paidById === currentUser?.id) {
+                            const split = exp.allSplits?.find((s: any) => s.userId === other.userId);
+                            if (split) directDebts += split.owedAmount;
+                          }
+                          if (exp.paidById === other.userId) {
+                            const split = exp.allSplits?.find((s: any) => s.userId === currentUser?.id);
+                            if (split) offsetCredits += split.owedAmount;
+                          }
+                        }
+                        const net = directDebts - offsetCredits;
+                        return { directDebts, offsetCredits, net };
+                      })();
+
+                      const isOwed = peerSummary.net >= 0;
+                      const displayAmount = Math.abs(peerSummary.net);
+                      const hasDebt = displayAmount > 0.01;
+
+                      return (
+                        <div
+                          key={index}
+                          onClick={() =>
+                            openSettlementDetail({
+                              fromUserId: isOwed ? other.userId : (currentUser?.id || ''),
+                              fromUserName: isOwed ? other.userName : (currentUser?.name || ''),
+                              toUserId: isOwed ? (currentUser?.id || '') : other.userId,
+                              toUserName: isOwed ? (currentUser?.name || '') : other.userName,
+                              amount: displayAmount,
+                            })
+                          }
+                          className="bg-slate-50 border border-slate-200 rounded-2xl p-4 flex flex-col gap-2 hover:border-indigo-250 hover:bg-indigo-50/5 transition-all cursor-pointer hover:scale-[1.01]"
+                          title="Click to view peer-to-peer transaction breakdown and payback"
+                        >
+                          <div className="flex justify-between items-center text-xs">
+                            <span className="font-bold text-slate-800">{other.userName}</span>
+                            <span
+                              className={`font-extrabold px-2 py-0.5 rounded-lg text-[11px] ${
+                                !hasDebt
+                                  ? 'bg-slate-100 text-slate-500'
+                                  : isOwed
+                                  ? 'bg-emerald-50 text-emerald-700'
+                                  : 'bg-red-50 text-red-600'
+                              }`}
+                            >
+                              {!hasDebt ? '' : isOwed ? '+' : '-'}₹
+                              {displayAmount.toLocaleString(undefined, {
+                                minimumFractionDigits: 2,
+                                maximumFractionDigits: 2,
+                              })}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-500 space-y-0.5 border-t border-slate-150 pt-1.5">
+                            <div className="flex justify-between">
+                              <span>You paid (Direct Debts):</span>
+                              <span className="font-semibold text-slate-700">
+                                ₹{peerSummary.directDebts.toLocaleString(undefined, {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>{other.userName} paid (Offset Credits):</span>
+                              <span className="font-semibold text-slate-700">
+                                ₹{peerSummary.offsetCredits.toLocaleString(undefined, {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-[10px] text-indigo-700 font-semibold italic mt-0.5 text-right">
+                            {!hasDebt ? 'Fully settled' : isOwed ? `${other.userName} owes you` : `You owe ${other.userName}`}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
               </div>
-
             </div>
-
           </div>
         )}
+
+        {activeTab === 'monthly' && (
+          <div className="space-y-6">
+            <div className="bg-white border border-slate-200 rounded-3xl p-6 shadow-sm space-y-4">
+              <div className="space-y-0.5">
+                <h3 className="font-bold text-lg text-slate-900 flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-indigo-600" />
+                  Monthly Detailed Reconciliation
+                </h3>
+                <p className="text-xs text-slate-500">Person-wise total paid, total owed, and net contributions grouped by month</p>
+              </div>
+
+              {monthlyBreakdown.length === 0 ? (
+                <div className="py-16 text-center text-slate-400 text-xs">No transactions recorded to group by month.</div>
+              ) : (
+                <div className="space-y-6">
+                  {monthlyBreakdown.map((m) => (
+                    <div key={m.monthKey} className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-xs">
+                      <div className="bg-slate-50 border-b border-slate-200 px-4 py-3 flex justify-between items-center">
+                        <span className="font-bold text-slate-800 text-sm">{m.monthKey}</span>
+                        <span className="text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 px-2.5 py-0.5 rounded-lg font-bold">
+                          Month Total Spend: ₹{m.totalSpend.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </span>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px] bg-slate-50/50">
+                              <th className="py-2.5 px-4 font-bold text-slate-600">Roommate</th>
+                              <th className="py-2.5 px-4 text-right font-bold text-slate-600">Total Paid</th>
+                              <th className="py-2.5 px-4 text-right font-bold text-slate-600">Total Owed</th>
+                              <th className="py-2.5 px-4 text-right font-bold text-slate-600">Net Balance Contribution</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100">
+                            {Object.entries(m.members).map(([name, val]) => {
+                              const net = val.paid - val.owed;
+                              const isPositive = net >= 0;
+                              return (
+                                <tr key={name} className="hover:bg-slate-50/50 transition-colors">
+                                  <td className="py-2.5 px-4 font-semibold text-slate-800">{name}</td>
+                                  <td className="py-2.5 px-4 text-right text-slate-600">₹{val.paid.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  <td className="py-2.5 px-4 text-right text-slate-600">₹{val.owed.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
+                                  <td className={`py-2.5 px-4 text-right font-bold ${isPositive ? 'text-emerald-600' : 'text-red-500'}`}>
+                                    {isPositive ? '+' : ''}₹{net.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </>
+    )}
       </main>
 
       {/* MODAL: Settle Debt */}
@@ -634,6 +1046,354 @@ export default function GroupDashboard({ params }: { params: Promise<{ groupId: 
                 {submittingExpense ? 'Creating...' : 'Create Expense'}
               </button>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Roommate Balance Audit Breakdown */}
+      {detailModalItem && detailModalItem.type === 'roommate' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-2xl p-6 space-y-6 shadow-2xl relative max-h-[85vh] overflow-y-auto">
+            <button
+              onClick={() => { setDetailModalItem(null); setModalLedger([]); }}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-indigo-50 border border-indigo-100 flex items-center justify-center text-indigo-600 font-bold text-lg select-none">
+                  {detailModalItem.data.userName[0]}
+                </div>
+                <div>
+                  <h4 className="font-bold text-xl text-slate-900">{detailModalItem.data.userName}'s Balance Audit</h4>
+                  <p className="text-xs text-slate-500">Comprehensive breakdown of all transaction contributions</p>
+                </div>
+              </div>
+              <span className={`font-bold text-base px-3.5 py-1.5 rounded-xl ${detailModalItem.data.netBalance >= 0 ? 'bg-emerald-50 text-emerald-600 border border-emerald-100' : 'bg-red-50 text-red-600 border border-red-100'}`}>
+                {detailModalItem.data.netBalance >= 0 ? '+' : ''}₹{detailModalItem.data.netBalance.toLocaleString()}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 bg-slate-50 border border-slate-200/60 p-4 rounded-2xl">
+              <div className="text-center border-r border-slate-250">
+                <span className="block text-[10px] text-slate-450 uppercase font-bold tracking-wider mb-1">Total Paid</span>
+                <span className="text-lg font-extrabold text-slate-800">₹{detailModalItem.data.totalPaid.toLocaleString()}</span>
+              </div>
+              <div className="text-center">
+                <span className="block text-[10px] text-slate-450 uppercase font-bold tracking-wider mb-1">Total Owed</span>
+                <span className="text-lg font-extrabold text-slate-800">₹{detailModalItem.data.totalOwed.toLocaleString()}</span>
+              </div>
+            </div>
+
+            {modalLedgerLoading ? (
+              <div className="py-16 text-center text-slate-400 text-xs animate-pulse">Loading audit logs...</div>
+            ) : (
+              <div className="space-y-6">
+                <div>
+                  <h5 className="font-bold text-slate-900 text-sm mb-3">Expenses Paid (Constitutes ₹{detailModalItem.data.totalPaid.toLocaleString()})</h5>
+                  {(() => {
+                    const paidExpenses = modalLedger.filter(item => item.wasPaidByMe);
+                    if (paidExpenses.length === 0) {
+                      return <div className="text-slate-400 text-xs italic py-6 bg-slate-50/50 rounded-xl text-center border border-dashed border-slate-250">No paid expenses recorded.</div>;
+                    }
+                    return (
+                      <div className="overflow-x-auto border border-slate-200 rounded-xl bg-slate-50/30">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px] bg-slate-100">
+                              <th className="py-2.5 px-3">Date</th>
+                              <th className="py-2.5 px-3">Description</th>
+                              <th className="py-2.5 px-3 text-right">Total Paid</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-150">
+                            {paidExpenses.map(item => (
+                              <tr key={item.expenseId} className="hover:bg-slate-50 transition-colors">
+                                <td className="py-2.5 px-3 text-slate-450">{new Date(item.date).toLocaleDateString()}</td>
+                                <td className="py-2.5 px-3 font-semibold text-slate-750">
+                                  <span>{item.description}</span>
+                                  {item.isSettlement ? (
+                                    <span className="ml-2 bg-indigo-50 text-indigo-700 border border-indigo-150 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Cash Payback</span>
+                                  ) : (
+                                    <div className="text-[10px] text-slate-400 font-normal mt-0.5">
+                                      Split with: {item.allSplits?.map((s: any) => `${s.userName} (₹${s.owedAmount.toLocaleString()})`).join(', ') || 'Equal split'}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-bold text-slate-850">₹{item.totalAmount.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div>
+                  <h5 className="font-bold text-slate-900 text-sm mb-3">Owed Shares (Constitutes ₹{detailModalItem.data.totalOwed.toLocaleString()})</h5>
+                  {(() => {
+                    const owedExpenses = modalLedger.filter(item => !item.wasPaidByMe);
+                    if (owedExpenses.length === 0) {
+                      return <div className="text-slate-400 text-xs italic py-6 bg-slate-50/50 rounded-xl text-center border border-dashed border-slate-250">No owed expenses recorded.</div>;
+                    }
+                    return (
+                      <div className="overflow-x-auto border border-slate-200 rounded-xl bg-slate-50/30">
+                        <table className="w-full text-left border-collapse text-xs">
+                          <thead>
+                            <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px] bg-slate-100">
+                              <th className="py-2.5 px-3">Date</th>
+                              <th className="py-2.5 px-3">Description</th>
+                              <th className="py-2.5 px-3">Paid By</th>
+                              <th className="py-2.5 px-3 text-right">Total Amount</th>
+                              <th className="py-2.5 px-3 text-right">My Share</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-150">
+                            {owedExpenses.map(item => (
+                              <tr key={item.expenseId} className="hover:bg-slate-50 transition-colors">
+                                <td className="py-2.5 px-3 text-slate-450">{new Date(item.date).toLocaleDateString()}</td>
+                                <td className="py-2.5 px-3 font-semibold text-slate-750">
+                                  <span>{item.description}</span>
+                                  {item.isSettlement ? (
+                                    <span className="ml-2 bg-indigo-50 text-indigo-700 border border-indigo-150 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Cash Payback</span>
+                                  ) : (
+                                    <div className="text-[10px] text-slate-400 font-normal mt-0.5">
+                                      Split with: {item.allSplits?.map((s: any) => `${s.userName} (₹${s.owedAmount.toLocaleString()})`).join(', ') || 'Equal split'}
+                                    </div>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-3 text-slate-600 font-medium">{item.paidByUserName}</td>
+                                <td className="py-2.5 px-3 text-right text-slate-500">₹{item.totalAmount.toLocaleString()}</td>
+                                <td className="py-2.5 px-3 text-right font-bold text-red-500">₹{item.myOwedShare.toLocaleString()}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: Settlement Verification Breakdown */}
+      {detailModalItem && detailModalItem.type === 'settlement' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-6 bg-slate-900/40 backdrop-blur-sm">
+          <div className="bg-white border border-slate-200 rounded-3xl w-full max-w-2xl p-6 space-y-6 shadow-2xl relative max-h-[85vh] overflow-y-auto">
+            <button
+              onClick={() => { setDetailModalItem(null); setModalLedger([]); }}
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-750 transition-colors cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+
+            <div className="space-y-1 pb-3 border-b border-slate-100">
+              <h4 className="font-bold text-lg text-slate-900">Settlement Verification</h4>
+              <p className="text-xs text-slate-500">Optimized transfer calculation details</p>
+            </div>
+
+            {modalLedgerLoading ? (
+              <div className="py-16 text-center text-slate-400 text-xs animate-pulse">
+                <RefreshCw className="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-500" />
+                Loading auditing details...
+              </div>
+            ) : (() => {
+              const debts = modalLedger.filter(item => !item.wasPaidByMe && item.paidByUserName === detailModalItem.data.toUserName);
+              const totalDebts = debts.reduce((sum, item) => sum + (item.myOwedShare || item.totalAmount), 0);
+
+              const credits = modalLedger
+                .filter(item => item.wasPaidByMe)
+                .map(item => {
+                  const targetSplit = item.allSplits?.find((s: any) => s.userName === detailModalItem.data.toUserName);
+                  if (!targetSplit) return null;
+                  return {
+                    ...item,
+                    targetOwedShare: targetSplit.owedAmount
+                  };
+                })
+                .filter(Boolean) as any[];
+              const totalCredits = credits.reduce((sum, item) => sum + item.targetOwedShare, 0);
+
+              const directNet = totalDebts - totalCredits;
+              const isFlipped = directNet < 0;
+              const displayAmount = Math.abs(directNet);
+              const fromName = isFlipped ? detailModalItem.data.toUserName : detailModalItem.data.fromUserName;
+              const toName = isFlipped ? detailModalItem.data.fromUserName : detailModalItem.data.toUserName;
+
+              return (
+                <div className="space-y-6">
+                  {/* Dynamic Transfer Header */}
+                  <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl text-center space-y-2">
+                    <div className="text-sm font-semibold text-slate-800">
+                      <span className="text-red-500 font-bold">{fromName}</span>
+                      <span className="text-slate-400 mx-2">should transfer</span>
+                      <span className="text-indigo-600 font-extrabold text-base block my-1">
+                        ₹{displayAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                      <span className="text-slate-400 mx-2">to</span>
+                      <span className="text-emerald-600 font-bold">{toName}</span>
+                    </div>
+                  </div>
+
+                  {/* Direct peer-to-peer balance reconciliation */}
+                  <div className="bg-slate-50 border border-slate-200 p-4 rounded-2xl text-xs space-y-3">
+                    <div className="font-bold text-slate-800 text-center pb-2 border-b border-slate-200">
+                      Direct peer-to-peer balance reconciliation
+                    </div>
+                    <div className="space-y-2">
+                      <div
+                        onClick={() => setExpandModalDebts(!expandModalDebts)}
+                        className="flex justify-between items-center p-2 rounded-lg hover:bg-slate-150 cursor-pointer transition-colors border border-transparent hover:border-slate-200"
+                        title="Click to toggle itemized debts list"
+                      >
+                        <span className="font-semibold text-slate-655 flex items-center gap-1">
+                          Direct Debts ({detailModalItem.data.fromUserName} owes {detailModalItem.data.toUserName})
+                          <span className="text-[10px] text-indigo-500 font-normal">({expandModalDebts ? 'Click to hide ▴' : 'Click to view ▾'})</span>
+                        </span>
+                        <span className="text-right font-extrabold text-slate-850">₹{totalDebts.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
+                      
+                      <div
+                        onClick={() => setExpandModalCredits(!expandModalCredits)}
+                        className="flex justify-between items-center p-2 rounded-lg hover:bg-slate-150 cursor-pointer transition-colors border border-transparent hover:border-slate-200"
+                        title="Click to toggle itemized credits list"
+                      >
+                        <span className="font-semibold text-slate-655 flex items-center gap-1">
+                          Direct Offset Credits ({detailModalItem.data.toUserName} owes {detailModalItem.data.fromUserName})
+                          <span className="text-[10px] text-indigo-500 font-normal">({expandModalCredits ? 'Click to hide ▴' : 'Click to view ▾'})</span>
+                        </span>
+                        <span className="text-right font-extrabold text-slate-850">-₹{totalCredits.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+                      </div>
+                    </div>
+                    <div className="pt-2 border-t border-slate-200 flex justify-between font-extrabold text-indigo-750 text-sm">
+                      <span>Net Cash Payback:</span>
+                      <span className={isFlipped ? 'text-red-500' : 'text-indigo-750'}>
+                        {isFlipped ? '-' : ''}₹{displayAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+                  </div>
+
+                  {expandModalDebts && (
+                    <div className="animate-fadeIn border border-slate-200 p-4 bg-slate-50/20 rounded-2xl space-y-3">
+                      <h5 className="font-bold text-slate-905 text-xs flex justify-between border-b border-slate-200 pb-2">
+                        <span>Direct Debts Breakdown</span>
+                        <span className="text-slate-400">({detailModalItem.data.fromUserName} owes {detailModalItem.data.toUserName})</span>
+                      </h5>
+                      {debts.length === 0 ? (
+                        <div className="text-slate-400 text-xs italic py-4 bg-slate-50/50 rounded-xl text-center border border-dashed border-slate-255">No direct debts recorded where {detailModalItem.data.fromUserName} owes {detailModalItem.data.toUserName}.</div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="overflow-x-auto border border-slate-200 rounded-xl bg-slate-50/30">
+                            <table className="w-full text-left border-collapse text-xs">
+                              <thead>
+                                <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px] bg-slate-100">
+                                  <th className="py-2.5 px-3">Date</th>
+                                  <th className="py-2.5 px-3">Description</th>
+                                  <th className="py-2.5 px-3 text-right">Total Amount</th>
+                                  <th className="py-2.5 px-3 text-right">Owed Share</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-150">
+                                {debts.map(item => (
+                                  <tr key={item.expenseId} className="hover:bg-slate-50 transition-colors">
+                                    <td className="py-2.5 px-3 text-slate-450">{new Date(item.date).toLocaleDateString()}</td>
+                                    <td className="py-2.5 px-3 font-semibold text-slate-755">
+                                      <span>{item.description}</span>
+                                      {item.isSettlement ? (
+                                        <span className="ml-2 bg-indigo-50 text-indigo-700 border border-indigo-150 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Cash Payback</span>
+                                      ) : (
+                                        <div className="text-[10px] text-slate-400 font-normal mt-0.5">
+                                          Split with: {item.allSplits?.map((s: any) => `${s.userName} (₹${s.owedAmount.toLocaleString()})`).join(', ') || 'Equal split'}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right text-slate-500">₹{item.totalAmount.toLocaleString()}</td>
+                                    <td className="py-2.5 px-3 text-right font-bold text-red-500">₹{(item.myOwedShare || item.totalAmount).toLocaleString()}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="text-right text-xs font-bold text-slate-750 pr-3">
+                            Total Owed: ₹{totalDebts.toLocaleString()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {expandModalCredits && (
+                    <div className="animate-fadeIn border border-slate-200 p-4 bg-slate-50/20 rounded-2xl space-y-3">
+                      <h5 className="font-bold text-slate-905 text-xs flex justify-between border-b border-slate-200 pb-2">
+                        <span>Offset Credits Breakdown</span>
+                        <span className="text-slate-400">({detailModalItem.data.toUserName} owes {detailModalItem.data.fromUserName})</span>
+                      </h5>
+                      {credits.length === 0 ? (
+                        <div className="text-slate-400 text-xs italic py-4 bg-slate-50/50 rounded-xl text-center border border-dashed border-slate-255">No offset credits recorded where {detailModalItem.data.toUserName} owes {detailModalItem.data.fromUserName}.</div>
+                      ) : (
+                        <div className="space-y-2">
+                          <div className="overflow-x-auto border border-slate-200 rounded-xl bg-slate-50/30">
+                            <table className="w-full text-left border-collapse text-xs">
+                              <thead>
+                                <tr className="border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px] bg-slate-100">
+                                  <th className="py-2.5 px-3">Date</th>
+                                  <th className="py-2.5 px-3">Description</th>
+                                  <th className="py-2.5 px-3 text-right">Total Amount</th>
+                                  <th className="py-2.5 px-3 text-right">Offset Share</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-150">
+                                {credits.map(item => (
+                                  <tr key={item.expenseId} className="hover:bg-slate-50 transition-colors">
+                                    <td className="py-2.5 px-3 text-slate-450">{new Date(item.date).toLocaleDateString()}</td>
+                                    <td className="py-2.5 px-3 font-semibold text-slate-755">
+                                      <span>{item.description}</span>
+                                      {item.isSettlement ? (
+                                        <span className="ml-2 bg-indigo-50 text-indigo-700 border border-indigo-150 text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide">Cash Payback</span>
+                                      ) : (
+                                        <div className="text-[10px] text-slate-400 font-normal mt-0.5">
+                                          Split with: {item.allSplits?.map((s: any) => `${s.userName} (₹${s.owedAmount.toLocaleString()})`).join(', ') || 'Equal split'}
+                                        </div>
+                                      )}
+                                    </td>
+                                    <td className="py-2.5 px-3 text-right text-slate-500">₹{item.totalAmount.toLocaleString()}</td>
+                                    <td className="py-2.5 px-3 text-right font-bold text-emerald-600">₹{item.targetOwedShare.toLocaleString()}</td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                          <div className="text-right text-xs font-bold text-slate-755 pr-3">
+                            Total Credits: ₹{totalCredits.toLocaleString()}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            <div className="flex gap-2 pt-2">
+              <button
+                onClick={() => {
+                  setSettlePayerId(detailModalItem.data.fromUserId);
+                  setSettlePayeeId(detailModalItem.data.toUserId);
+                  setSettleAmount(detailModalItem.data.amount.toString());
+                  setIsSettleModalOpen(true);
+                  setDetailModalItem(null);
+                }}
+                className="w-full bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold py-2.5 rounded-xl transition-colors cursor-pointer text-center"
+              >
+                Record Cash Payback Now
+              </button>
+            </div>
           </div>
         </div>
       )}

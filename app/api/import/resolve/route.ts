@@ -188,7 +188,12 @@ async function resolveWithPolicy(
     rateSummary = `Exchange rate source: ${rate.source}, as of ${rate.asOf}.`;
   }
 
-  const { resolved, summary } = applyPolicy(rawRow, anomalies, liveUsdRate);
+  const [users, memberships] = await Promise.all([
+    prisma.user.findMany(),
+    prisma.groupMembership.findMany(),
+  ]);
+
+  const { resolved, summary } = applyPolicy(rawRow, anomalies, liveUsdRate, users, memberships);
   if (rateSummary) summary.push(rateSummary);
 
   if (resolved.skipLedger) {
@@ -266,16 +271,49 @@ async function commitResolvedRow(args: {
     const userMap: Record<string, string> = {};
     for (const user of dbUsers) userMap[user.name] = user.id;
 
-    const resolvedPayer = dbUsers.find((user) => user.name === resolved.paidBy);
-    if (!resolvedPayer) throw new Error(`Payer "${resolved.paidBy}" does not match a seeded user.`);
-
     const mainGroup = await tx.group.findFirst();
     if (!mainGroup) throw new Error("No default group exists. Seed the database first.");
+
+    let resolvedPayer = dbUsers.find((user) => user.name === resolved.paidBy);
+    if (!resolvedPayer && resolved.paidBy) {
+      const newUser = await tx.user.create({
+        data: { name: resolved.paidBy }
+      });
+      await tx.groupMembership.create({
+        data: {
+          groupId: mainGroup.id,
+          userId: newUser.id,
+          joinedAt: new Date('2026-01-01T00:00:00Z'),
+        }
+      });
+      resolvedPayer = newUser;
+      dbUsers.push(newUser);
+      userMap[newUser.name] = newUser.id;
+    }
+    if (!resolvedPayer) throw new Error("Payer is required before committing.");
 
     const splitWith = resolved.isSettlement
       ? [resolved.splitWith[0]].filter(Boolean)
       : resolved.splitWith;
     if (splitWith.length === 0) throw new Error("At least one split participant is required.");
+
+    for (const name of splitWith) {
+      let user = dbUsers.find((u) => u.name === name);
+      if (!user) {
+        const newUser = await tx.user.create({
+          data: { name }
+        });
+        await tx.groupMembership.create({
+          data: {
+            groupId: mainGroup.id,
+            userId: newUser.id,
+            joinedAt: new Date('2026-01-01T00:00:00Z'),
+          }
+        });
+        dbUsers.push(newUser);
+        userMap[newUser.name] = newUser.id;
+      }
+    }
 
     const splitInput: RawSplitInput = {
       amount: resolved.amount,
